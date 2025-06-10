@@ -4,7 +4,7 @@ const endpoints = {
     VERSION: "v3",
     VERIFY_ORIGIN: "/heartbeat",
     SERVER_EXPERIMENTS: "/experiments",
-    USER: "/@me",
+    USER: "/users/@me",
 
     STABLE_LOGIN_CALLBACK: "/callback",
     DEV_LOGIN_CALLBACK: "/dev/callback",
