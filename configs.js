@@ -5,6 +5,14 @@ const endpoints = {
     VERIFY_ORIGIN: "/heartbeat",
     SERVER_EXPERIMENTS: "/experiments",
     USER: "/@me",
+
+    STABLE_LOGIN_CALLBACK: "/callback",
+    DEV_LOGIN_CALLBACK: "/dev/callback",
+    BETA_LOGIN_CALLBACK: "/beta/callback",
+
+    USER_LOGIN: "/user-login",
+
+
     DISCORD_PROFILE_EFFECTS: "/discord-profile-effects",
     DISCORD_LEAKED_CATEGORIES: "/discord-leaked-categories",
     DISCORD_COLLECTIBLES_HOME: "/discord-collectibles-home",

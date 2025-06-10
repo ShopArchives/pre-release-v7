@@ -153,16 +153,21 @@ async function verifyOrigin() {
         const loginToken = params.get("login");
 
         if (loginToken) {
-            fetch('https://api.yapper.shop/v2/give-me-funny-code', {
-                method: 'GET'
-            })
-            .then(response => response.json())
-            .then(data => {
-                console.log('Server response:', data.fun);
-            })
-            .catch(error => {
-                console.error('Fetch error:', error);
+            const userLogin = await fetch(redneredAPI + endpoints.USER_LOGIN, {
+                method: 'POST',
+                headers: {
+                    "Authorization": loginToken,
+                    'Content-Type': 'application/json'
+                }
             });
+
+            if (!userLogin.ok) {
+                return
+            }
+
+            const data = await userLogin.json();
+
+            localStorage.token = data.token
         }
 
         if (localStorage.token) {
@@ -3338,6 +3343,19 @@ function copyValue(value) {
 
 function redirectToLink(link) {
     window.location.href = link;
+}
+
+function loginToDiscord() {
+    let redirect;
+    if (appType === "Stable") {
+        redirect = redneredAPI + endpoints.STABLE_LOGIN_CALLBACK
+    } else if (appType === "Dev") {
+        redirect = redneredAPI + endpoints.DEV_LOGIN_CALLBACK
+    } else if (appType === "Pre-Release") {
+        redirect = redneredAPI + endpoints.BETA_LOGIN_CALLBACK
+    }
+    const discordUrl = `https://discord.com/api/oauth2/authorize?client_id=1342635740768501886&redirect_uri=${encodeURIComponent(redirect)}&response_type=code&scope=identify`;
+    window.location.href = discordUrl;
 }
 
 
