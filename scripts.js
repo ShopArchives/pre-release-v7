@@ -2710,7 +2710,7 @@ async function loadSite() {
                                         let banTitle = 'You have been suspended from submitting reviews.';
                                         let banDisclaimer = `
                                             <p>You have violated our</p>
-                                            <a class="link" href="https://yapper.shop/terms-of-service">Terms of Service</a>
+                                            <a class="link" href="https://yapper.shop/legal-information/?page=tos">Terms of Service</a>
                                             <p>and can no longer submit reviews.</p>
                                             <a class="link" href="https://yapper.shop/bans-and-suspensions">Learn More</a>
                                         `;
@@ -2720,7 +2720,7 @@ async function loadSite() {
                                             banTitle = 'You have been permanently banned from submitting reviews.';
                                             banDisclaimer = `
                                                 <p>You have violated our</p>
-                                                <a class="link" href="https://yapper.shop/terms-of-service">Terms of Service</a>
+                                                <a class="link" href="https://yapper.shop/legal-information/?page=tos">Terms of Service</a>
                                                 <p>and can no longer submit reviews. This ban cannot be appealed.</p>
                                             `;
                                             appealable = false;
@@ -2730,7 +2730,7 @@ async function loadSite() {
                                             banTitle = 'You cannot submit reviews.';
                                             banDisclaimer = `
                                                 <p>Your username violates our</p>
-                                                <a class="link" href="https://yapper.shop/terms-of-service">Community Guidelines,</a>
+                                                <a class="link" href="https://yapper.shop/legal-information/?page=tos">Community Guidelines,</a>
                                                 <p>all your reviews have been temporarily hidden from the public.</p>
                                             `;
                                             appealable = false;
@@ -3699,7 +3699,7 @@ async function loadSite() {
         document.getElementById('logo-link').textContent = 'yapper.shop'
     }
 
-    createNotice('You are currently using an experimental version of Shop Archives. By using this version you have a very high chance to encounter bugs or glitches. Expect things to change before the full release.', 2);
+    // createNotice('You are currently using an experimental version of Shop Archives. By using this version you have a very high chance to encounter bugs or glitches. Expect things to change before the full release.', 2);
 
 
 
