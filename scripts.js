@@ -184,10 +184,10 @@ async function verifyOrigin() {
     } else {
         const data = await rawData.json();
 
-        // if (data.message != "The official domain for Shop Archives is yapper.shop, any other domain is most likely a scam or copy." || window.location.hostname != 'yapper.shop' && window.location.hostname != 'dev.yapper.shop' && window.location.hostname != 'beta.yapper.shop') {
-        //     triggerSafetyBlock();
-        //     return
-        // }
+        if (data.message != "The official domain for Shop Archives is yapper.shop, any other domain is most likely a scam or copy." || window.location.hostname != 'yapper.shop' && window.location.hostname != 'dev.yapper.shop' && window.location.hostname != 'beta.yapper.shop') {
+            triggerSafetyBlock();
+            return
+        }
 
         const brickWall = document.getElementById('brick-wall');
 
