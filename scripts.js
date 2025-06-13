@@ -6,6 +6,9 @@ document.getElementById('logo-container').setAttribute('data-tooltip', appType+'
 
 // Cache
 let currentPageCache;
+let currentOpenModalId;
+let scrollToCache;
+let devtoolsOpenCache;
 let currentUserData;
 let usersXPBalance;
 let discordProfileEffectsCache;
@@ -20,58 +23,105 @@ const overridesKey = 'experimentOverrides';
 const serverKey = 'serverExperiments';
 
 function loadOverrides() {
-  try {
-    return JSON.parse(localStorage.getItem(overridesKey)) || [];
-  } catch {
-    return [];
-  }
+    try {
+        return JSON.parse(localStorage.getItem(overridesKey)) || [];
+    } catch {
+        return [];
+    }
 }
 
 function saveOverrides(overrides) {
-  localStorage.setItem(overridesKey, JSON.stringify(overrides));
+    localStorage.setItem(overridesKey, JSON.stringify(overrides));
 }
 
 function loadServerExperiments() {
-  try {
-    return JSON.parse(localStorage.getItem(serverKey)) || [];
-  } catch {
-    return [];
-  }
+    try {
+        return JSON.parse(localStorage.getItem(serverKey)) || [];
+    } catch {
+        return [];
+    }
 }
 
 // Keep auto: true ones synced with server rollout
 function syncOverridesWithServer() {
-  const serverExperiments = loadServerExperiments();
-  let overrides = loadOverrides();
-  let changed = false;
+    const serverExperiments = loadServerExperiments();
+    let overrides = loadOverrides();
+    let changed = false;
 
-  experiments.forEach(exp => {
-    const serverMatch = serverExperiments.find(s => s.codename === exp.codename);
-    if (!serverMatch) return;
+    experiments.forEach(exp => {
+        const serverMatch = serverExperiments.find(s => s.codename === exp.codename);
+        if (!serverMatch) return;
 
-    const existingIndex = overrides.findIndex(o => o.codename === exp.codename);
-    const override = overrides[existingIndex];
+        const existingIndex = overrides.findIndex(o => o.codename === exp.codename);
+        const override = overrides[existingIndex];
 
-    if (!override) {
-      // Add new override from server
-      overrides.push({
-        codename: exp.codename,
-        release_config: exp.release_config,
-        treatment: serverMatch.rollout,
-        auto: true
-      });
-      changed = true;
-    } else if (override.auto === true) {
-      // Update treatment if server rollout changed
-      if (override.treatment !== serverMatch.rollout) {
-        overrides[existingIndex].treatment = serverMatch.rollout;
-        changed = true;
-      }
-    }
-  });
+        if (!override) {
+            // Add new override from server
+            overrides.push({
+                codename: exp.codename,
+                release_config: exp.release_config,
+                treatment: serverMatch.rollout,
+                auto: true
+            });
+            changed = true;
+        } else if (override.auto === true) {
+            // Update treatment if server rollout changed
+            if (override.treatment !== serverMatch.rollout) {
+                overrides[existingIndex].treatment = serverMatch.rollout;
+                changed = true;
+            }
+        }
+    });
 
-  if (changed) saveOverrides(overrides);
+    if (changed) saveOverrides(overrides);
 }
+
+
+
+// Settings Code
+
+if (!localStorage.getItem('settingsStore')) {
+    localStorage.setItem('settingsStore', JSON.stringify({}))
+}
+
+let settingsStore = JSON.parse(localStorage.getItem('settingsStore'));
+
+// Initialize settings store
+function initializeSettings() {
+    if (Object.keys(settingsStore).length === 0) {
+        // Initialize with default values
+        for (let key in settings) {
+            settingsStore[key] = settings[key];
+        }
+    } else {
+        // Only add missing keys, don't overwrite existing ones
+        for (let key in settings) {
+            if (!(key in settingsStore)) {
+                settingsStore[key] = settings[key];
+            }
+        }
+    }
+    
+    localStorage.setItem('settingsStore', JSON.stringify(settingsStore));
+}
+
+initializeSettings();
+
+// Function to change a setting
+function changeSetting(key, value) {
+    if (key in settingsStore) {
+        settingsStore[key] = value;
+        
+        localStorage.setItem('settingsStore', JSON.stringify(settingsStore));
+        
+        console.log(`Setting '${key}' changed to ${value}`);
+    } else {
+        console.error(`Setting '${key}' does not exist`);
+    }
+}
+
+
+
 
 
 const params = new URLSearchParams(window.location.search);
@@ -116,6 +166,14 @@ function removeParams(params) {
     history.replaceState(null, '', url);
 }
 
+if (params.get("itemSkuId")) {
+    currentOpenModalId = params.get("itemSkuId");
+}
+
+if (params.get("scrollTo")) {
+    scrollToCache = params.get("scrollTo");
+}
+
 
 async function verifyOrigin() {
 
@@ -126,27 +184,12 @@ async function verifyOrigin() {
     } else {
         const data = await rawData.json();
 
-        // if (data.message != "The official domain for Shop Archives is yapper.shop, any other domain is most likely a scam or copy." || window.location.hostname != 'yapper.shop' && window.location.hostname != 'dev.yapper.shop') {
+        // if (data.message != "The official domain for Shop Archives is yapper.shop, any other domain is most likely a scam or copy." || window.location.hostname != 'yapper.shop' && window.location.hostname != 'dev.yapper.shop' && window.location.hostname != 'beta.yapper.shop') {
         //     triggerSafetyBlock();
         //     return
         // }
 
         const brickWall = document.getElementById('brick-wall');
-
-        // Fetch & Sync Server experiments
-
-        const expRawData = await fetch(redneredAPI + endpoints.SERVER_EXPERIMENTS);
-
-        if (!expRawData.ok) {
-            triggerSafetyBlock();
-            return
-        }
-
-        const expData = await expRawData.json();
-
-        localStorage.setItem('serverExperiments', JSON.stringify(expData));
-
-        syncOverridesWithServer();
 
         // Fetch User data
 
@@ -179,7 +222,7 @@ async function verifyOrigin() {
             });
 
             if (!userRawData.ok) {
-                triggerSafetyBlock();
+                triggerSessionExpiredBlock();
                 return
             }
 
@@ -188,6 +231,43 @@ async function verifyOrigin() {
             localStorage.setItem('currentUser', JSON.stringify(userData));
 
             currentUserData = JSON.parse(localStorage.getItem('currentUser'));
+        }
+
+        // Fetch & Sync Server experiments
+
+        if (localStorage.token) {
+            const expRawData = await fetch(redneredAPI + endpoints.SERVER_EXPERIMENTS, {
+                method: "GET",
+                headers: {
+                    "Authorization": localStorage.token
+                }
+            });
+
+            if (!expRawData.ok) {
+                triggerSafetyBlock();
+                return
+            }
+
+            const expData = await expRawData.json();
+
+            localStorage.setItem('serverExperiments', JSON.stringify(expData));
+
+            syncOverridesWithServer();
+        } else {
+            const expRawData = await fetch(redneredAPI + endpoints.SERVER_EXPERIMENTS, {
+                method: "GET"
+            });
+
+            if (!expRawData.ok) {
+                triggerSafetyBlock();
+                return
+            }
+
+            const expData = await expRawData.json();
+
+            localStorage.setItem('serverExperiments', JSON.stringify(expData));
+
+            syncOverridesWithServer();
         }
 
         await loadSite();
@@ -210,6 +290,10 @@ async function loadSite() {
     } else if (!localStorage.sa_theme) {
         localStorage.sa_theme = "dark";
         document.body.classList.add('theme-dark');
+    }
+
+    if (settingsStore.profile_effect_tweaks_fix === 1) {
+        document.body.classList.add('profile-effect-bug-fix-thumbnails');
     }
 
     const pages = [
@@ -374,14 +458,15 @@ async function loadSite() {
     ];
 
 
-    if (JSON.parse(localStorage.getItem(overridesKey)).find(exp => exp.codename === 'xp_system')?.treatment === 1) {
+    if (JSON.parse(localStorage.getItem(overridesKey)).find(exp => exp.codename === 'xp_system')?.treatment === 1 && currentUserData?.xp_balance) {
         let xpBalance = document.createElement("div");
 
-        const data = Math.floor(Math.random() * (10000000 - 1 + 1)) + 1;
-
-        usersXPBalance = data;
+        usersXPBalance = currentUserData?.xp_balance;
 
         xpBalance.classList.add('my-xp-value-container');
+        xpBalance.addEventListener("click", () => {
+            setModalv3InnerContent('xp_shop');
+        });
         xpBalance.classList.add('has-tooltip');
         xpBalance.setAttribute('data-tooltip', 'You have '+usersXPBalance.toLocaleString()+' XP');
 
@@ -406,6 +491,7 @@ async function loadSite() {
         }
 
         document.getElementById('ubar-avatar').src = userAvatar;
+        document.getElementById('log-in-with-discord-button-ubar').remove();
     } else {
         document.getElementById('ubar-displayname').remove();
         document.getElementById('ubar-username').remove();
@@ -431,7 +517,7 @@ async function loadSite() {
                 <a class="shop-card-var-title" data-shop-card-var-title></a>
             </div>
             <div class="card-button-container"data-product-card-open-in-shop>
-                <button class="card-button" title="Open this item in the Discord Shop">Open In Shop</button>
+                <button class="card-button" onclick="redirectToLink('https://discord.com/shop#itemSkuId=${product.sku_id}')" title="Open this item in the Discord Shop">Open In Shop</button>
             </div>
             <div class="shop-card-tag-container" data-shop-card-tag-container>
             </div>
@@ -444,7 +530,7 @@ async function loadSite() {
         let priceStandard = null;
         let priceOrb = null;
 
-        if (localStorage.discord_premium_type === "2" && product.prices) {
+        if (currentUserData?.premium_type === 2 && product.prices) {
             product.prices["4"]?.country_prices?.prices?.forEach(price => {
                 if (price.currency === "usd") {
                     priceStandard = price.amount;
@@ -633,7 +719,7 @@ async function loadSite() {
             nameplate_user.innerHTML = `
                 <video disablepictureinpicture muted loop class="nameplate-null-user nameplate-video-preview" style="position: absolute; height: 100%; width: auto; right: 0;"></video>
                 <div class="nameplate-user-avatar"></div>
-                <p class="nameplate-user-name">Discord</p>
+                <p class="nameplate-user-name">Nameplate</p>
             `;
 
             if (currentUserData) {
@@ -679,20 +765,20 @@ async function loadSite() {
     
                 decorationBundleContainer.innerHTML = `
                     <div class="type-0-preview-background"></div>
-                    <img class="type-0-preview" loading="lazy" src="https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === 0).asset}.png?size=4096&passthrough=false"></img>
+                    <img class="type-0-preview" loading="lazy" src="https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=false"></img>
                 `;
                 
                 previewContainer.appendChild(decorationBundleContainer);
 
                 const decorationPreview = decorationBundleContainer.querySelector('.type-0-preview')
                 card.addEventListener("mouseenter", () => {
-                    decorationPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === 0).asset}.png?size=4096&passthrough=true`;
+                    decorationPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=true`;
                 });
                 card.addEventListener("mouseleave", () => {
-                    decorationPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === 0).asset}.png?size=4096&passthrough=false`;
+                    decorationPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=false`;
                 });
             }
-            if (product.items.find(item => item.type === 1)) {
+            if (product.items.find(item => item.type === item_types.PROFILE_EFFECT)) {
 
                 let effectBundleContainer = document.createElement("div");
 
@@ -741,7 +827,7 @@ async function loadSite() {
 
                 const effectBundleContainerDiv = effectBundleContainer.querySelector('.effectBundleContainerDiv');
                 // Get the product ID from the first item
-                const productId = product.items.find(item => item.type === 1) ? product.items.find(item => item.type === 1).id : null;
+                const productId = product.items.find(item => item.type === item_types.PROFILE_EFFECT) ? product.items.find(item => item.type === item_types.PROFILE_EFFECT).id : null;
                 
                 if (productId && discordProfileEffectsCache) {
                     // Find the profile effect configuration
@@ -767,7 +853,7 @@ async function loadSite() {
                     effectBundleContainerDiv.innerHTML = ``;
                 }
             }
-            itemSummary.textContent = `Bundle includes: ${product.bundled_products.find(item => item.type === 0).name} Decoration & ${product.bundled_products.find(item => item.type === 1).name} Profile Effect`;
+            itemSummary.textContent = `Bundle includes: ${product.bundled_products.find(item => item.type === item_types.AVATAR_DECORATION).name} Decoration & ${product.bundled_products.find(item => item.type === item_types.PROFILE_EFFECT).name} Profile Effect`;
         } else if (product.type === item_types.VARIANTS_GROUP) {
             previewContainer.classList.add('type-2000-preview-container')
 
@@ -986,350 +1072,952 @@ async function loadSite() {
         }
 
         card.addEventListener("click", (event) => {
-            if (event.target.matches("[data-shop-card-var]") || event.target.matches(".card-button") || event.target.matches(".shareIcon_f4a996")) {
+            if (event.target.matches(".shop-card-var")) {
             } else {
                 openProductModal();
                 addParams({itemSkuId: product.sku_id})
             }
+        });
 
-            async function openProductModal() {
-                let modal = document.createElement("div");
+        if (currentOpenModalId === product.sku_id) {
+            setTimeout(() => {
+                openProductModal();
+            }, 500);
+        }
 
-                modal.classList.add('modalv2');
+        async function openProductModal() {
+            let modal = document.createElement("div");
 
-                let logoAsset = 'https://cdn.yapper.shop/assets/31.png'
-                if (category.logo != null) {
-                    logoAsset = `https://cdn.discordapp.com/app-assets/1096190356233670716/${category.logo}.png?size=4096`
-                }
+            modal.classList.add('modalv2');
 
-                modal.innerHTML = `
-                    <div class="modalv2-inner">
-                        <div class="modalv2-tabs-container">
-                            <div class="tab selected" id="modalv2-tab-1">
-                                <svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <circle cx="12" cy="24" r="6" fill="currentColor"/>
-                                    <circle cx="12" cy="72" r="6" fill="currentColor"/>
-                                    <circle cx="12" cy="48" r="6" fill="currentColor"/>
-                                    <rect x="28" y="20" width="60" height="8" rx="4" fill="currentColor"/>
-                                    <path d="M72.124 44.0029C64.5284 44.0668 57.6497 47.1046 52.6113 52H32C29.7909 52 28 50.2091 28 48C28 45.7909 29.7909 44 32 44H72C72.0415 44 72.0828 44.0017 72.124 44.0029Z" fill="currentColor"/>
-                                    <path d="M44.2852 68C44.0983 69.3065 44 70.6418 44 72C44 73.3582 44.0983 74.6935 44.2852 76H32C29.7909 76 28 74.2091 28 72C28 69.7909 29.7909 68 32 68H44.2852Z" fill="currentColor"/>
-                                    <circle cx="72" cy="72" r="16" stroke="currentColor" stroke-width="8"/>
-                                    <rect x="81" y="85.9497" width="7" height="16" rx="3.5" transform="rotate(-45 81 85.9497)" fill="currentColor"/>
-                                </svg>
-                                <p>Details</p>
-                            </div>
-                            <div class="tab" id="modalv2-tab-2">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <path d="M15.7376 3.18925C15.4883 2.93731 15.0814 2.93686 14.8316 3.18824L14.0087 4.01625C13.7618 4.26471 13.7614 4.66581 14.0078 4.91476L20.3804 11.3527C20.6265 11.6013 20.6265 12.0017 20.3804 12.2503L14.0078 18.6882C13.7614 18.9373 13.7618 19.3383 14.0087 19.5867L14.8316 20.4148C15.0814 20.6662 15.4883 20.6658 15.7376 20.4138L23.815 12.2503C24.061 12.0016 24.061 11.6014 23.815 11.3528L15.7376 3.18925Z" fill="currentColor"/>
-                                    <path d="M9.99171 4.91476C10.2381 4.66581 10.2377 4.26471 9.99081 4.01625L9.16787 3.18824C8.91804 2.93686 8.51118 2.93731 8.2619 3.18925L0.184466 11.3528C-0.0614893 11.6014 -0.061488 12.0016 0.184466 12.2503L8.2619 20.4138C8.51118 20.6658 8.91803 20.6662 9.16787 20.4148L9.99081 19.5867C10.2377 19.3383 10.2381 18.9373 9.99171 18.6882L3.61906 12.2503C3.37298 12.0017 3.37298 11.6013 3.61906 11.3527L9.99171 4.91476Z" fill="currentColor"/>
-                                </svg>
-                                <p>Raw</p>
-                            </div>
+            let logoAsset = 'https://cdn.yapper.shop/assets/31.png'
+            if (category.logo != null) {
+                logoAsset = `https://cdn.discordapp.com/app-assets/1096190356233670716/${category.logo}.png?size=4096`
+            }
+
+            modal.innerHTML = `
+                <div class="modalv2-inner">
+                    <div class="modalv2-tabs-container">
+                        <div class="tab selected" id="modalv2-tab-1">
+                            <svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="12" cy="24" r="6" fill="currentColor"/>
+                                <circle cx="12" cy="72" r="6" fill="currentColor"/>
+                                <circle cx="12" cy="48" r="6" fill="currentColor"/>
+                                <rect x="28" y="20" width="60" height="8" rx="4" fill="currentColor"/>
+                                <path d="M72.124 44.0029C64.5284 44.0668 57.6497 47.1046 52.6113 52H32C29.7909 52 28 50.2091 28 48C28 45.7909 29.7909 44 32 44H72C72.0415 44 72.0828 44.0017 72.124 44.0029Z" fill="currentColor"/>
+                                <path d="M44.2852 68C44.0983 69.3065 44 70.6418 44 72C44 73.3582 44.0983 74.6935 44.2852 76H32C29.7909 76 28 74.2091 28 72C28 69.7909 29.7909 68 32 68H44.2852Z" fill="currentColor"/>
+                                <circle cx="72" cy="72" r="16" stroke="currentColor" stroke-width="8"/>
+                                <rect x="81" y="85.9497" width="7" height="16" rx="3.5" transform="rotate(-45 81 85.9497)" fill="currentColor"/>
+                            </svg>
+                            <p>Details</p>
                         </div>
-                        
-                        <div id="modalv2-inner-content">
-                        </div>
-
-                        <div data-modal-top-product-buttons>
-                            <div class="has-tooltip" data-tooltip="Close" data-close-product-card-button>
-                                <svg class="modalv2_top_icon" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M17.3 18.7a1 1 0 0 0 1.4-1.4L13.42 12l5.3-5.3a1 1 0 0 0-1.42-1.4L12 10.58l-5.3-5.3a1 1 0 0 0-1.4 1.42L10.58 12l-5.3 5.3a1 1 0 1 0 1.42 1.4L12 13.42l5.3 5.3Z" class=""></path></svg>
-                            </div>
-                            <div class="has-tooltip" data-tooltip="Copy Discord Link">
-                                <svg class="modalv2_top_icon" onclick="copyEmoji('https://canary.discord.com/shop#itemSkuId=1349486948942745695'); copyNotice('copylink');" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M16.32 14.72a1 1 0 0 1 0-1.41l2.51-2.51a3.98 3.98 0 0 0-5.62-5.63l-2.52 2.51a1 1 0 0 1-1.41-1.41l2.52-2.52a5.98 5.98 0 0 1 8.45 8.46l-2.52 2.51a1 1 0 0 1-1.41 0ZM7.68 9.29a1 1 0 0 1 0 1.41l-2.52 2.51a3.98 3.98 0 1 0 5.63 5.63l2.51-2.52a1 1 0 0 1 1.42 1.42l-2.52 2.51a5.98 5.98 0 0 1-8.45-8.45l2.51-2.51a1 1 0 0 1 1.42 0Z" class=""></path><path fill="currentColor" d="M14.7 10.7a1 1 0 0 0-1.4-1.4l-4 4a1 1 0 1 0 1.4 1.4l4-4Z" class=""></path></svg>
-                            </div>
+                        <div class="tab" id="modalv2-tab-2">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M15.7376 3.18925C15.4883 2.93731 15.0814 2.93686 14.8316 3.18824L14.0087 4.01625C13.7618 4.26471 13.7614 4.66581 14.0078 4.91476L20.3804 11.3527C20.6265 11.6013 20.6265 12.0017 20.3804 12.2503L14.0078 18.6882C13.7614 18.9373 13.7618 19.3383 14.0087 19.5867L14.8316 20.4148C15.0814 20.6662 15.4883 20.6658 15.7376 20.4138L23.815 12.2503C24.061 12.0016 24.061 11.6014 23.815 11.3528L15.7376 3.18925Z" fill="currentColor"/>
+                                <path d="M9.99171 4.91476C10.2381 4.66581 10.2377 4.26471 9.99081 4.01625L9.16787 3.18824C8.91804 2.93686 8.51118 2.93731 8.2619 3.18925L0.184466 11.3528C-0.0614893 11.6014 -0.061488 12.0016 0.184466 12.2503L8.2619 20.4138C8.51118 20.6658 8.91803 20.6662 9.16787 20.4148L9.99081 19.5867C10.2377 19.3383 10.2381 18.9373 9.99171 18.6882L3.61906 12.2503C3.37298 12.0017 3.37298 11.6013 3.61906 11.3527L9.99171 4.91476Z" fill="currentColor"/>
+                            </svg>
+                            <p>Raw</p>
                         </div>
                     </div>
-                `;
+                    
+                    <div id="modalv2-inner-content">
+                    </div>
 
-                function changeModalTab(tab) {
-                    modal.querySelectorAll('.selected').forEach((el) => {
-                        el.classList.remove("selected");
-                    });
+                    <div data-modal-top-product-buttons>
+                        <div class="has-tooltip" data-tooltip="Close" data-close-product-card-button>
+                            <svg class="modalv2_top_icon" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M17.3 18.7a1 1 0 0 0 1.4-1.4L13.42 12l5.3-5.3a1 1 0 0 0-1.42-1.4L12 10.58l-5.3-5.3a1 1 0 0 0-1.4 1.42L10.58 12l-5.3 5.3a1 1 0 1 0 1.42 1.4L12 13.42l5.3 5.3Z" class=""></path></svg>
+                        </div>
+                        <div class="has-tooltip" data-tooltip="Copy Discord Link">
+                            <svg class="modalv2_top_icon" onclick="copyValue('https://canary.discord.com/shop#itemSkuId=${product.sku_id}');" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M16.32 14.72a1 1 0 0 1 0-1.41l2.51-2.51a3.98 3.98 0 0 0-5.62-5.63l-2.52 2.51a1 1 0 0 1-1.41-1.41l2.52-2.52a5.98 5.98 0 0 1 8.45 8.46l-2.52 2.51a1 1 0 0 1-1.41 0ZM7.68 9.29a1 1 0 0 1 0 1.41l-2.52 2.51a3.98 3.98 0 1 0 5.63 5.63l2.51-2.52a1 1 0 0 1 1.42 1.42l-2.52 2.51a5.98 5.98 0 0 1-8.45-8.45l2.51-2.51a1 1 0 0 1 1.42 0Z" class=""></path><path fill="currentColor" d="M14.7 10.7a1 1 0 0 0-1.4-1.4l-4 4a1 1 0 1 0 1.4 1.4l4-4Z" class=""></path></svg>
+                        </div>
+                    </div>
+                </div>
+            `;
 
-                    modal.querySelector('#modalv2-tab-'+tab).classList.add('selected');
+            function changeModalTab(tab) {
+                modal.querySelectorAll('.selected').forEach((el) => {
+                    el.classList.remove("selected");
+                });
 
-                    const modalInner = modal.querySelector('#modalv2-inner-content');
+                modal.querySelector('#modalv2-tab-'+tab).classList.add('selected');
 
-                    if (tab === '1') {
-                        modalInner.innerHTML = `
-                            <div class="modalv2-left">
-                                <div class="shop-card-tag-container" data-shop-card-tag-container></div>
-                                <div class="modalv2-preview-container"></div>
-                                <div class="modalv2-bottom-container">
-                                    <p class="sku_id has-tooltip" data-tooltip="Click To Copy" onclick="copyValue('${product.sku_id}')">${product.sku_id}</p>
-                                    <h3>${product.name}</h3>
-                                    <p>${product.summary}</p>
-                                    <div class="modalv2-price-container"></div>
-                                    <div class="modalv2-price-container-crossed"></div>
-                                    <button>Open In Shop</button>
+                const modalInner = modal.querySelector('#modalv2-inner-content');
+
+                if (tab === '1') {
+                    modalInner.innerHTML = `
+                        <div class="modalv2-left">
+                            <div class="shop-card-tag-container" data-shop-card-tag-container></div>
+                            <div class="modalv2-preview-container"></div>
+                            <div class="modalv2-bottom-container">
+                                <p class="sku_id has-tooltip" data-tooltip="Click To Copy" onclick="copyValue('${product.sku_id}')">${product.sku_id}</p>
+                                <h3>${product.name}</h3>
+                                <p class="modal-summary">${product.summary}</p>
+                                <div class="modalv2-price-container"></div>
+                                <div class="modalv2-price-container-crossed"></div>
+                                <div class="modalv2-var-container">
+                                    <div class="shop-card-var-container" data-shop-card-var-container></div>
+                                    <a class="shop-card-var-title" data-shop-card-var-title></a>
+                                </div>
+                                <button onclick="redirectToLink('https://discord.com/shop#itemSkuId=${product.sku_id}')" title="Open this item in the Discord Shop">Open In Shop</button>
+                            </div>
+                        </div>
+                        <div class="modalv2-right">
+                            <img class="modalv2-right-bg-img" src="https://cdn.discordapp.com/app-assets/1096190356233670716/${category.pdp_bg ? category.pdp_bg : category.banner}.png?size=4096"></img>
+                            <img class="modalv2-right-logo-img" src="${logoAsset}"></img>
+
+                            <div class="modal2-profile-preview">
+                                <div class="modal-preview-profile" style="height: 210px;">
+                                    <div class="options-preview-profile-banner-color"></div>
+                                    <div class="options-preview-profile-banner"></div>
+                                    <div class="profile-avatar-preview-bg"></div>
+                                    <div class="profile-avatar-preview"></div>
+                                    <p class="options-preview-profile-displayname">Shop Archives</p>
+                                    <p class="options-preview-profile-username">yapper.shop</p>
+                                    <img class="profile-avatar-deco-preview">
+                                    <div class="options-preview-profile-status-bg"></div>
+                                    <div class="options-preview-profile-status-color"></div>
+                                    <div class="profile-profile-effects-preview"></div>
                                 </div>
                             </div>
-                            <div class="modalv2-right">
-                                <img class="modalv2-right-bg-img" src="https://cdn.discordapp.com/app-assets/1096190356233670716/${category.pdp_bg ? category.pdp_bg : category.banner}.png?size=4096"></img>
-                                <img class="modalv2-right-logo-img" src="${logoAsset}"></img>
+
+                        </div>
+                    `;
+
+                    if (currentUserData) {
+                        if (currentUserData.banner_color) modalInner.querySelector('.options-preview-profile-banner-color').style.backgroundColor = currentUserData.banner_color;
+                        if (currentUserData.avatar) modalInner.querySelector('.profile-avatar-preview').style.backgroundImage = `url(https://cdn.discordapp.com/avatars/${currentUserData.id}/${currentUserData.avatar}.webp?size=128)`;
+                        if (currentUserData.banner) modalInner.querySelector('.options-preview-profile-banner').style.backgroundImage = `url(https://cdn.discordapp.com/banners/${currentUserData.id}/${currentUserData.banner}.webp?size=480)`;
+                        if (currentUserData.global_name) {
+                            modalInner.querySelector('.options-preview-profile-displayname').textContent = currentUserData.global_name;
+                        } else {
+                            modalInner.querySelector('.options-preview-profile-displayname').textContent = currentUserData.username;
+                        }
+                        modalInner.querySelector('.options-preview-profile-username').textContent = currentUserData.username;
+                    }
+
+                    const cardTag = modalInner.querySelector("[data-shop-card-tag-container]");
+
+                    const priceContainer = modalInner.querySelector(".modalv2-price-container");
+                    const priceContainer2 = modalInner.querySelector(".modalv2-price-container-crossed");
+
+                    let priceStandard = null;
+                    let priceOrb = null;
+                    let priceStandardCrossed = null;
+                    let priceOrbCrossed = null;
+
+                    cardTag.innerHTML = `
+                        <p class="shop-card-tag">ORBS EXCLUSIVES</p>
+                    `;
+
+                    if (currentUserData?.premium_type === 2 && product.prices) {
+                        product.prices["4"]?.country_prices?.prices?.forEach(price => {
+                            if (price.currency === "usd") {
+                                priceStandard = price.amount;
+                            }
+                            if (price.currency === "discord_orb") {
+                                priceOrb = price.amount;
+                            }
+                        });
+
+                        product.prices["0"]?.country_prices?.prices?.forEach(price => {
+                            if (price.currency === "usd") {
+                                priceStandardCrossed = price.amount;
+                            }
+                            if (price.currency === "discord_orb") {
+                                priceOrbCrossed = price.amount;
+                            }
+                        });
+
+                        if (priceStandard != null) {
+                            cardTag.innerHTML = ``;
+                            let us_price = document.createElement("div");
+        
+                            us_price.innerHTML = `
+                                <div class="nitro-icon"></div>
+                                <a>US$${(priceStandard / 100).toFixed(2)}</a>
+                            `;
+    
+                            priceContainer.appendChild(us_price);
+                        }
+    
+                        if (priceOrb != null) {
+                            let orb_price = document.createElement("div");
+        
+                            orb_price.innerHTML = `
+                                <div class="orb-icon"></div>
+                                <a>${priceOrb}</a>
+                            `;
+                            if (priceStandard != null) {
+                                orb_price.style.marginLeft = `auto`;
+                            } else {
+                                orb_price.style.marginLeft = `unset`;
+                            }
+    
+                            priceContainer.appendChild(orb_price);
+                        }
+
+
+                        if (priceStandardCrossed != null) {
+                            cardTag.innerHTML = ``;
+                            let us_price = document.createElement("div");
+        
+                            us_price.innerHTML = `
+                                <a>US$${(priceStandardCrossed / 100).toFixed(2)}</a>
+                            `;
+    
+                            priceContainer2.appendChild(us_price);
+                        }
+    
+                        if (priceOrbCrossed != null) {
+                            let orb_price = document.createElement("div");
+        
+                            orb_price.innerHTML = `
+                                <div class="orb-icon"></div>
+                                <a>${priceOrbCrossed}</a>
+                            `;
+                            if (priceStandard != null) {
+                                orb_price.style.marginLeft = `auto`;
+                            } else {
+                                orb_price.style.marginLeft = `unset`;
+                            }
+    
+                            priceContainer2.appendChild(orb_price);
+                        }
+
+                    } else if (product.prices) {
+                        product.prices["0"]?.country_prices?.prices?.forEach(price => {
+                            if (price.currency === "usd") {
+                                priceStandard = price.amount;
+                            }
+                            if (price.currency === "discord_orb") {
+                                priceOrb = price.amount;
+                            }
+                        });
+
+                        product.prices["4"]?.country_prices?.prices?.forEach(price => {
+                            if (price.currency === "usd") {
+                                priceStandardCrossed = price.amount;
+                            }
+                            if (price.currency === "discord_orb") {
+                                priceOrbCrossed = price.amount;
+                            }
+                        });
+
+                        if (priceStandard != null) {
+                            cardTag.innerHTML = ``;
+                            let us_price = document.createElement("div");
+        
+                            us_price.innerHTML = `
+                                <a>US$${(priceStandard / 100).toFixed(2)}</a>
+                            `;
+    
+                            priceContainer.appendChild(us_price);
+                        }
+    
+                        if (priceOrb != null) {
+                            let orb_price = document.createElement("div");
+        
+                            orb_price.innerHTML = `
+                                <div class="orb-icon"></div>
+                                <a>${priceOrb}</a>
+                            `;
+                            if (priceStandard != null) {
+                                orb_price.style.marginLeft = `auto`;
+                            } else {
+                                orb_price.style.marginLeft = `unset`;
+                            }
+    
+                            priceContainer.appendChild(orb_price);
+                        }
+
+
+                        if (priceStandardCrossed != null) {
+                            cardTag.innerHTML = ``;
+                            let us_price = document.createElement("div");
+        
+                            us_price.innerHTML = `
+                                <div class="nitro-icon"></div>
+                                <a>US$${(priceStandardCrossed / 100).toFixed(2)}</a>
+                            `;
+    
+                            priceContainer2.appendChild(us_price);
+                        }
+    
+                        if (priceOrbCrossed != null) {
+                            let orb_price = document.createElement("div");
+        
+                            orb_price.innerHTML = `
+                                <div class="orb-icon"></div>
+                                <a>${priceOrbCrossed}</a>
+                            `;
+                            if (priceStandard != null) {
+                                orb_price.style.marginLeft = `auto`;
+                            } else {
+                                orb_price.style.marginLeft = `unset`;
+                            }
+    
+                            priceContainer2.appendChild(orb_price);
+                        }
+                    }
+
+                    if (!priceStandard && !priceOrb) {
+                        cardTag.innerHTML = ``;
+                    }
+
+                    const sku_id = modalInner.querySelector('.sku_id');
+
+                    sku_id.addEventListener("click", function () {
+                        sku_id.classList.add('clicked');
+                        setTimeout(() => {
+                            sku_id.classList.remove('clicked');
+                        }, 500);
+                    });
+
+                    const modalPreviewContainer = modalInner.querySelector('.modalv2-preview-container');
+
+                    const modalSummary = modalInner.querySelector('.modal-summary');
+
+                    if (product.type === item_types.AVATAR_DECORATION) {
+
+                        modalInner.querySelector('.profile-avatar-deco-preview').src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=true`
+
+                        modalPreviewContainer.innerHTML = `
+                            <div class="type-0-preview-container">
+                                <div class="type-0-preview-background"></div>
+                                <img class="type-0-preview" loading="lazy" src="https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=false">
                             </div>
                         `;
 
-                        const cardTag = modalInner.querySelector("[data-shop-card-tag-container]");
+                        const decoPreview = modalPreviewContainer.querySelector('.type-0-preview');
 
-                        const priceContainer = modalInner.querySelector(".modalv2-price-container");
-                        const priceContainer2 = modalInner.querySelector(".modalv2-price-container-crossed");
+                        decoPreview.addEventListener("mouseenter", () => {
+                            decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=true`;
+                        });
+                        decoPreview.addEventListener("mouseleave", () => {
+                            decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=false`;
+                        });
+                    } else if (product.type === item_types.PROFILE_EFFECT) {
 
-                        let priceStandard = null;
-                        let priceOrb = null;
-                        let priceStandardCrossed = null;
-                        let priceOrbCrossed = null;
+                        modalInner.querySelector('.profile-avatar-deco-preview').remove();
 
-                        cardTag.innerHTML = `
-                            <p class="shop-card-tag">ORBS EXCLUSIVES</p>
+                        modalInner.querySelector('.modal-preview-profile').style.height = '400px';
+
+                        modalInner.querySelector('.profile-profile-effects-preview').innerHTML = `
+                            <div class="modal-profile-profile-effect-preview"></div>
                         `;
 
-                        if (localStorage.discord_premium_type === "2" && product.prices) {
-                            product.prices["4"]?.country_prices?.prices?.forEach(price => {
-                                if (price.currency === "usd") {
-                                    priceStandard = price.amount;
-                                }
-                                if (price.currency === "discord_orb") {
-                                    priceOrb = price.amount;
-                                }
-                            });
+                        const profileProfileEffectPreview = modalInner.querySelector('.modal-profile-profile-effect-preview');
 
-                            product.prices["0"]?.country_prices?.prices?.forEach(price => {
-                                if (price.currency === "usd") {
-                                    priceStandardCrossed = price.amount;
-                                }
-                                if (price.currency === "discord_orb") {
-                                    priceOrbCrossed = price.amount;
-                                }
-                            });
+                        // Get the product ID from the first item
+                        const productId = product.items && product.items[0] ? product.items[0].id : null;
 
-                            if (priceStandard != null) {
-                                cardTag.innerHTML = ``;
-                                let us_price = document.createElement("div");
-        
-                                us_price.innerHTML = `
-                                    <div class="nitro-icon"></div>
-                                    <a>US$${(priceStandard / 100).toFixed(2)}</a>
-                                `;
-    
-                                priceContainer.appendChild(us_price);
+                        if (productId && discordProfileEffectsCache) {
+                            // Find the profile effect configuration
+                            const profileEffect = findProfileEffectByProductId(discordProfileEffectsCache, productId);
+
+                            if (profileEffect) {
+                                // Set container to full width and auto height
+                                profileProfileEffectPreview.style.width = '100%';
+                                profileProfileEffectPreview.style.height = '100%';
+                                profileProfileEffectPreview.style.aspectRatio = '0.1';
+
+                                // Create and initialize the profile effects card with card-level hover
+                                const effectsCard = new ProfileEffectsCard(profileProfileEffectPreview, profileEffect, document.querySelector('.something-nobody-is-gonna-hover'), {
+                                    startImmediately: true
+                                });
+
+                                // Store reference for cleanup if needed
+                                document.querySelector('.something-nobody-is-gonna-hover')._profileEffectsCard = effectsCard;
+                            } else {
+                                // Fallback if profile effect not found
+                                profileProfileEffectPreview.innerHTML = ``;
                             }
-    
-                            if (priceOrb != null) {
-                                let orb_price = document.createElement("div");
-        
-                                orb_price.innerHTML = `
-                                    <div class="orb-icon"></div>
-                                    <a>${priceOrb}</a>
-                                `;
-                                if (priceStandard != null) {
-                                    orb_price.style.marginLeft = `auto`;
-                                } else {
-                                    orb_price.style.marginLeft = `unset`;
-                                }
-    
-                                priceContainer.appendChild(orb_price);
-                            }
-
-
-                            if (priceStandardCrossed != null) {
-                                cardTag.innerHTML = ``;
-                                let us_price = document.createElement("div");
-        
-                                us_price.innerHTML = `
-                                    <a>US$${(priceStandardCrossed / 100).toFixed(2)}</a>
-                                `;
-    
-                                priceContainer2.appendChild(us_price);
-                            }
-    
-                            if (priceOrbCrossed != null) {
-                                let orb_price = document.createElement("div");
-        
-                                orb_price.innerHTML = `
-                                    <div class="orb-icon"></div>
-                                    <a>${priceOrbCrossed}</a>
-                                `;
-                                if (priceStandard != null) {
-                                    orb_price.style.marginLeft = `auto`;
-                                } else {
-                                    orb_price.style.marginLeft = `unset`;
-                                }
-    
-                                priceContainer2.appendChild(orb_price);
-                            }
-
-                        } else if (product.prices) {
-                            product.prices["0"]?.country_prices?.prices?.forEach(price => {
-                                if (price.currency === "usd") {
-                                    priceStandard = price.amount;
-                                }
-                                if (price.currency === "discord_orb") {
-                                    priceOrb = price.amount;
-                                }
-                            });
-
-                            product.prices["4"]?.country_prices?.prices?.forEach(price => {
-                                if (price.currency === "usd") {
-                                    priceStandardCrossed = price.amount;
-                                }
-                                if (price.currency === "discord_orb") {
-                                    priceOrbCrossed = price.amount;
-                                }
-                            });
-
-                            if (priceStandard != null) {
-                                cardTag.innerHTML = ``;
-                                let us_price = document.createElement("div");
-        
-                                us_price.innerHTML = `
-                                    <a>US$${(priceStandard / 100).toFixed(2)}</a>
-                                `;
-    
-                                priceContainer.appendChild(us_price);
-                            }
-    
-                            if (priceOrb != null) {
-                                let orb_price = document.createElement("div");
-        
-                                orb_price.innerHTML = `
-                                    <div class="orb-icon"></div>
-                                    <a>${priceOrb}</a>
-                                `;
-                                if (priceStandard != null) {
-                                    orb_price.style.marginLeft = `auto`;
-                                } else {
-                                    orb_price.style.marginLeft = `unset`;
-                                }
-    
-                                priceContainer.appendChild(orb_price);
-                            }
-
-
-                            if (priceStandardCrossed != null) {
-                                cardTag.innerHTML = ``;
-                                let us_price = document.createElement("div");
-        
-                                us_price.innerHTML = `
-                                    <div class="nitro-icon"></div>
-                                    <a>US$${(priceStandardCrossed / 100).toFixed(2)}</a>
-                                `;
-    
-                                priceContainer2.appendChild(us_price);
-                            }
-    
-                            if (priceOrbCrossed != null) {
-                                let orb_price = document.createElement("div");
-        
-                                orb_price.innerHTML = `
-                                    <div class="orb-icon"></div>
-                                    <a>${priceOrbCrossed}</a>
-                                `;
-                                if (priceStandard != null) {
-                                    orb_price.style.marginLeft = `auto`;
-                                } else {
-                                    orb_price.style.marginLeft = `unset`;
-                                }
-    
-                                priceContainer2.appendChild(orb_price);
-                            }
+                        } else {
+                            // Fallback if no product ID or cache
+                            profileProfileEffectPreview.innerHTML = ``;
                         }
 
-                        if (!priceStandard && !priceOrb) {
-                            cardTag.innerHTML = ``;
+
+
+
+
+
+                        let effectBG = document.createElement("div");
+
+                        effectBG.classList.add('type-1-effect-background')
+    
+                        effectBG.innerHTML = `
+                            <svg width="383" height="764" viewBox="0 0 383 764" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g clip-path="url(#clip0_30_2)">
+                            <rect width="383" height="142" fill="#424549"/>
+                            <rect y="142" width="383" height="625" fill="#282B30"/>
+                            <rect x="21.5" y="90.5" width="99" height="99" rx="49.5" fill="#424549"/>
+                            <rect x="21.5" y="90.5" width="99" height="99" rx="49.5" stroke="#282B30" stroke-width="7"/>
+                            <path d="M90.5028 121.958C86.8115 120.235 82.9189 119.019 78.9189 118.335C78.3686 119.333 77.8719 120.358 77.429 121.411C73.1739 120.755 68.8383 120.755 64.5699 121.411C64.1269 120.358 63.6303 119.333 63.0799 118.335C59.0799 119.033 55.1739 120.249 51.4826 121.971C44.1537 133.015 42.1671 143.786 43.1604 154.407C47.4557 157.632 52.2611 160.093 57.3618 161.665C58.5162 160.093 59.5363 158.411 60.4088 156.662C58.7443 156.033 57.147 155.254 55.6168 154.338C56.0195 154.038 56.4088 153.737 56.798 153.436C65.7914 157.742 76.2075 157.742 85.2008 153.436C85.5901 153.75 85.9793 154.065 86.382 154.338C84.8518 155.254 83.2411 156.033 81.5766 156.676C82.4491 158.425 83.4693 160.093 84.6236 161.665C89.7377 160.093 94.5431 157.646 98.8384 154.407C100.006 142.091 96.8519 131.43 90.4894 121.958H90.5028ZM61.684 147.873C58.9189 147.873 56.6235 145.317 56.6235 142.173C56.6235 139.03 58.8249 136.446 61.6705 136.446C64.5162 136.446 66.7846 139.03 66.7309 142.173C66.6773 145.317 64.5028 147.873 61.684 147.873ZM80.3417 147.873C77.5632 147.873 75.2947 145.317 75.2947 142.173C75.2947 139.03 77.4961 136.446 80.3417 136.446C83.1874 136.446 85.4424 139.03 85.3887 142.173C85.335 145.317 83.1605 147.873 80.3417 147.873Z" fill="#929292"/>
+                            <rect x="90.5" y="159.5" width="23" height="23" rx="11.5" fill="#289960"/>
+                            <rect x="90.5" y="159.5" width="23" height="23" rx="11.5" stroke="#282B30" stroke-width="5"/>
+                            <rect x="12" y="208" width="359" height="540" rx="9" fill="#1E2124"/>
+                            <rect x="27" y="222" width="168" height="25" rx="10" fill="#424549"/>
+                            <rect x="27" y="405" width="106" height="25" rx="10" fill="#424549"/>
+                            <rect x="120" y="482" width="107" height="29" rx="10" fill="#424549"/>
+                            <rect x="27" y="476" width="74" height="74" rx="10" fill="#424549"/>
+                            <rect x="27" y="565" width="329" height="36" rx="4" fill="#282B30"/>
+                            <rect x="27" y="336" width="316" height="25" rx="10" fill="#424549"/>
+                            <rect x="27" y="252" width="83" height="15" rx="7.5" fill="#424549"/>
+                            <rect x="27" y="384" width="186" height="15" rx="7.5" fill="#424549"/>
+                            <rect x="27" y="453" width="118" height="15" rx="7.5" fill="#424549"/>
+                            <rect x="120" y="517" width="69" height="18" rx="9" fill="#424549"/>
+                            <rect x="37" y="647" width="18" height="18" rx="9" fill="#424549"/>
+                            <rect x="69" y="648" width="106" height="16" rx="8" fill="#424549"/>
+                            <path d="M333.564 652.993C333.259 652.726 333.243 652.257 333.53 651.97C333.793 651.707 334.217 651.695 334.494 651.945L338.174 655.257C338.615 655.654 338.615 656.346 338.174 656.743L334.494 660.055C334.217 660.305 333.793 660.293 333.53 660.03C333.243 659.743 333.259 659.274 333.564 659.007L336.14 656.753C336.595 656.354 336.595 655.646 336.14 655.247L333.564 652.993Z" fill="#424549"/>
+                            <path d="M333.564 710.493C333.259 710.226 333.243 709.757 333.53 709.47C333.793 709.207 334.217 709.195 334.494 709.445L338.174 712.757C338.615 713.154 338.615 713.846 338.174 714.243L334.494 717.555C334.217 717.805 333.793 717.793 333.53 717.53C333.243 717.243 333.259 716.774 333.564 716.507L336.14 714.253C336.595 713.854 336.595 713.146 336.14 712.747L333.564 710.493Z" fill="#424549"/>
+                            <rect x="69" y="706" width="106" height="16" rx="8" fill="#424549"/>
+                            <rect x="37" y="705" width="18" height="18" rx="9" fill="#424549"/>
+                            <rect x="27" y="315" width="71" height="15" rx="7.5" fill="#424549"/>
+                            <rect x="27" y="290" width="329" height="1" rx="0.5" fill="#424549"/>
+                            </g>
+                            <defs>
+                            <clipPath id="clip0_30_2">
+                            <rect width="383" height="764" rx="21" fill="white"/>
+                            </clipPath>
+                            </defs>
+                            </svg>
+                        `;
+                        
+
+                        let effectContainer = document.createElement("div");
+
+                        effectContainer.classList.add('type-1-effect-preview')
+    
+                        effectContainer.innerHTML = `
+                            <div class="modal-profile-effect-preview"></div>
+                        `;
+
+                        effectContainer.appendChild(effectBG);
+
+                        modalPreviewContainer.appendChild(effectContainer);
+
+
+                        const effectPreview = effectContainer.querySelector('.modal-profile-effect-preview');
+
+                        if (productId && discordProfileEffectsCache) {
+                            // Find the profile effect configuration
+                            const profileEffect = findProfileEffectByProductId(discordProfileEffectsCache, productId);
+
+                            if (profileEffect) {
+                                // Set container to full width and auto height
+                                effectPreview.style.width = '100%';
+                                effectPreview.style.height = '100%';
+                                effectPreview.style.aspectRatio = '0.1';
+
+                                // Create and initialize the profile effects card with card-level hover
+                                const effectsCard = new ProfileEffectsCard(effectPreview, profileEffect, effectContainer);
+
+                                // Store reference for cleanup if needed
+                                effectContainer._profileEffectsCard = effectsCard;
+                            } else {
+                                // Fallback if profile effect not found
+                                effectPreview.innerHTML = ``;
+                            }
+                        } else {
+                            // Fallback if no product ID or cache
+                            effectPreview.innerHTML = ``;
                         }
+                    } else if (product.type === item_types.NAMEPLATE) {
+                        let nameplate_user = document.createElement("div");
+                
+                        nameplate_user.classList.add('nameplate-null-user');
+                        nameplate_user.classList.add('nameplate-preview');
+                        nameplate_user.innerHTML = `
+                            <video disablepictureinpicture muted loop class="nameplate-null-user nameplate-video-preview" style="position: absolute; height: 100%; width: auto; right: 0;"></video>
+                            <div class="nameplate-user-avatar avatar1"></div>
+                            <p class="nameplate-user-name name1">Nameplate</p>
+                        `;
 
-                        const sku_id = modalInner.querySelector('.sku_id');
+                        const item = product.items[0];
+                        const paletteName = item.palette;
+                        const bgcolor = nameplate_palettes[paletteName].darkBackground;
 
-                        sku_id.addEventListener("click", function () {
-                            sku_id.classList.add('clicked');
-                            setTimeout(() => {
-                                sku_id.classList.remove('clicked');
-                            }, 500);
+                        const videoElement = nameplate_user.querySelector(".nameplate-video-preview");
+
+                        videoElement.src = `https://cdn.discordapp.com/assets/collectibles/${item.asset}asset.webm`;
+
+                        nameplate_user.style.backgroundImage = `linear-gradient(90deg, #00000000 -30%, ${bgcolor} 200%)`;
+
+                        nameplate_user.addEventListener("mouseenter", () => {
+                            videoElement.play();
+                        });
+                        nameplate_user.addEventListener("mouseleave", () => {
+                            videoElement.pause();
                         });
 
-                        const modalPreviewContainer = modalInner.querySelector('.modalv2-preview-container');
+                        modalPreviewContainer.appendChild(nameplate_user);
 
-                        if (product.type === item_types.AVATAR_DECORATION) {
+                        modalInner.querySelector('.modal2-profile-preview').innerHTML = `
+                            <div class="modal-nameplate-profile-preview">
+                                <div class="nameplate-null-user">
+                                    <div class="nameplate-null-user-avatar"></div>
+                                    <div class="nameplate-null-user-name _1"></div>
+                                    <div class="nameplate-preview-status-bg"></div>
+                                    <div class="nameplate-preview-status-color"></div>
+                                </div>
+                                <div class="nameplate-null-user">
+                                    <div class="nameplate-null-user-avatar"></div>
+                                    <div class="nameplate-null-user-name _2"></div>
+                                    <div class="nameplate-preview-status-bg"></div>
+                                    <div class="nameplate-preview-status-color"></div>
+                                </div>
+                                <div class="nameplate-null-user nameplate-preview" style="background-image: linear-gradient(90deg, #00000000 -30%, ${bgcolor} 200%);">
+                                    <video disablepictureinpicture muted loop autoplay class="nameplate-null-user nameplate-video-preview" style="position: absolute; height: 100%; width: auto; right: 0;" src="https://cdn.discordapp.com/assets/collectibles/${item.asset}asset.webm"></video>
+                                    <div class="nameplate-user-avatar avatar2"></div>
+                                    <p class="nameplate-user-name name2">Nameplate</p>
+                                </div>
+                                <div class="nameplate-null-user">
+                                    <div class="nameplate-null-user-avatar"></div>
+                                    <div class="nameplate-null-user-name _2"></div>
+                                    <div class="nameplate-preview-status-bg"></div>
+                                    <div class="nameplate-preview-status-color"></div>
+                                </div>
+                                <div class="nameplate-null-user">
+                                    <div class="nameplate-null-user-avatar"></div>
+                                    <div class="nameplate-null-user-name _1"></div>
+                                    <div class="nameplate-preview-status-bg"></div>
+                                    <div class="nameplate-preview-status-color"></div>
+                                </div>
+                            </div>
+                        `;
+
+                        if (currentUserData) {
+                            nameplate_user.querySelector('.name1').textContent = currentUserData.global_name ? currentUserData.global_name : currentUserData.username;
+                            modalInner.querySelector('.name2').textContent = currentUserData.global_name ? currentUserData.global_name : currentUserData.username;
+                            let userAvatar = 'https://cdn.discordapp.com/avatars/'+currentUserData.id+'/'+currentUserData.avatar+'.webp?size=128';
+                            if (currentUserData.avatar.includes('a_')) {
+                                userAvatar = 'https://cdn.discordapp.com/avatars/'+currentUserData.id+'/'+currentUserData.avatar+'.gif?size=128';
+                            }
+
+                            nameplate_user.querySelector('.avatar1').style.backgroundImage = `url(${userAvatar})`;
+
+                            modalInner.querySelector('.avatar2').style.backgroundImage = `url(${userAvatar})`;
+                        }
+
+                    } else if (product.type === item_types.BUNDLE) {
+
+                        modalInner.querySelector('.modal-preview-profile').style.height = '400px';
+
+                        modalSummary.textContent = `Bundle includes: ${product.bundled_products.find(item => item.type === item_types.AVATAR_DECORATION).name} Decoration & ${product.bundled_products.find(item => item.type === item_types.PROFILE_EFFECT).name} Profile Effect`;
+
+                        modalPreviewContainer.classList.add('type-1000-modal-preview-container')
+
+                        if (product.items.find(item => item.type === item_types.AVATAR_DECORATION)) {
+
+                            modalInner.querySelector('.profile-avatar-deco-preview').src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=true`
+
                             modalPreviewContainer.innerHTML = `
                                 <div class="type-0-preview-container">
                                     <div class="type-0-preview-background"></div>
-                                    <img class="type-0-preview" loading="lazy" src="https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === 0).asset}.png?size=4096&amp;passthrough=false">
+                                    <img class="type-0-preview" loading="lazy" src="https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=false">
                                 </div>
                             `;
 
                             const decoPreview = modalPreviewContainer.querySelector('.type-0-preview');
 
-                            decoPreview.addEventListener("mouseenter", () => {
-                                decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === 0).asset}.png?size=4096&passthrough=true`;
+                            modalPreviewContainer.addEventListener("mouseenter", () => {
+                                decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=true`;
                             });
-                            decoPreview.addEventListener("mouseleave", () => {
-                                decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === 0).asset}.png?size=4096&passthrough=false`;
+                            modalPreviewContainer.addEventListener("mouseleave", () => {
+                                decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${product.items.find(item => item.type === item_types.AVATAR_DECORATION).asset}.png?size=4096&passthrough=false`;
                             });
                         }
+                        if (product.items.find(item => item.type === item_types.PROFILE_EFFECT)) {
 
-                    } else {
-                        modal.querySelector('#modalv2-inner-content').innerHTML = `
-                            <div class="view-raw-modalv2-inner">
-                                <textarea class="view-raw-modal-textbox" readonly>${JSON.stringify(product, undefined, 4)}</textarea>
-                            </div>
-                        `;
+
+                            modalInner.querySelector('.profile-profile-effects-preview').innerHTML = `
+                                <div class="modal-profile-profile-effect-preview"></div>
+                            `;
+
+                            const profileProfileEffectPreview = modalInner.querySelector('.modal-profile-profile-effect-preview');
+
+                            // Get the product ID from the first item
+                            const productId = product.items && product.items.find(item => item.type === item_types.PROFILE_EFFECT) ? product.items.find(item => item.type === item_types.PROFILE_EFFECT).id : null;
+
+                            if (productId && discordProfileEffectsCache) {
+                                // Find the profile effect configuration
+                                const profileEffect = findProfileEffectByProductId(discordProfileEffectsCache, productId);
+
+                                if (profileEffect) {
+                                    // Set container to full width and auto height
+                                    profileProfileEffectPreview.style.width = '100%';
+                                    profileProfileEffectPreview.style.height = '100%';
+                                    profileProfileEffectPreview.style.aspectRatio = '0.1';
+
+                                    // Create and initialize the profile effects card with card-level hover
+                                    const effectsCard = new ProfileEffectsCard(profileProfileEffectPreview, profileEffect, document.querySelector('.something-nobody-is-gonna-hover'), {
+                                        startImmediately: true
+                                    });
+
+                                    // Store reference for cleanup if needed
+                                    card._profileEffectsCard = effectsCard;
+                                } else {
+                                    // Fallback if profile effect not found
+                                    profileProfileEffectPreview.innerHTML = ``;
+                                }
+                            } else {
+                                // Fallback if no product ID or cache
+                                profileProfileEffectPreview.innerHTML = ``;
+                            }
+
+                            let effectBG = document.createElement("div");
+
+                            effectBG.classList.add('type-1-effect-background')
+    
+                            effectBG.innerHTML = `
+                                <svg width="383" height="764" viewBox="0 0 383 764" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <g clip-path="url(#clip0_30_2)">
+                                <rect width="383" height="142" fill="#424549"/>
+                                <rect y="142" width="383" height="625" fill="#282B30"/>
+                                <rect x="21.5" y="90.5" width="99" height="99" rx="49.5" fill="#424549"/>
+                                <rect x="21.5" y="90.5" width="99" height="99" rx="49.5" stroke="#282B30" stroke-width="7"/>
+                                <path d="M90.5028 121.958C86.8115 120.235 82.9189 119.019 78.9189 118.335C78.3686 119.333 77.8719 120.358 77.429 121.411C73.1739 120.755 68.8383 120.755 64.5699 121.411C64.1269 120.358 63.6303 119.333 63.0799 118.335C59.0799 119.033 55.1739 120.249 51.4826 121.971C44.1537 133.015 42.1671 143.786 43.1604 154.407C47.4557 157.632 52.2611 160.093 57.3618 161.665C58.5162 160.093 59.5363 158.411 60.4088 156.662C58.7443 156.033 57.147 155.254 55.6168 154.338C56.0195 154.038 56.4088 153.737 56.798 153.436C65.7914 157.742 76.2075 157.742 85.2008 153.436C85.5901 153.75 85.9793 154.065 86.382 154.338C84.8518 155.254 83.2411 156.033 81.5766 156.676C82.4491 158.425 83.4693 160.093 84.6236 161.665C89.7377 160.093 94.5431 157.646 98.8384 154.407C100.006 142.091 96.8519 131.43 90.4894 121.958H90.5028ZM61.684 147.873C58.9189 147.873 56.6235 145.317 56.6235 142.173C56.6235 139.03 58.8249 136.446 61.6705 136.446C64.5162 136.446 66.7846 139.03 66.7309 142.173C66.6773 145.317 64.5028 147.873 61.684 147.873ZM80.3417 147.873C77.5632 147.873 75.2947 145.317 75.2947 142.173C75.2947 139.03 77.4961 136.446 80.3417 136.446C83.1874 136.446 85.4424 139.03 85.3887 142.173C85.335 145.317 83.1605 147.873 80.3417 147.873Z" fill="#929292"/>
+                                <rect x="90.5" y="159.5" width="23" height="23" rx="11.5" fill="#289960"/>
+                                <rect x="90.5" y="159.5" width="23" height="23" rx="11.5" stroke="#282B30" stroke-width="5"/>
+                                <rect x="12" y="208" width="359" height="540" rx="9" fill="#1E2124"/>
+                                <rect x="27" y="222" width="168" height="25" rx="10" fill="#424549"/>
+                                <rect x="27" y="405" width="106" height="25" rx="10" fill="#424549"/>
+                                <rect x="120" y="482" width="107" height="29" rx="10" fill="#424549"/>
+                                <rect x="27" y="476" width="74" height="74" rx="10" fill="#424549"/>
+                                <rect x="27" y="565" width="329" height="36" rx="4" fill="#282B30"/>
+                                <rect x="27" y="336" width="316" height="25" rx="10" fill="#424549"/>
+                                <rect x="27" y="252" width="83" height="15" rx="7.5" fill="#424549"/>
+                                <rect x="27" y="384" width="186" height="15" rx="7.5" fill="#424549"/>
+                                <rect x="27" y="453" width="118" height="15" rx="7.5" fill="#424549"/>
+                                <rect x="120" y="517" width="69" height="18" rx="9" fill="#424549"/>
+                                <rect x="37" y="647" width="18" height="18" rx="9" fill="#424549"/>
+                                <rect x="69" y="648" width="106" height="16" rx="8" fill="#424549"/>
+                                <path d="M333.564 652.993C333.259 652.726 333.243 652.257 333.53 651.97C333.793 651.707 334.217 651.695 334.494 651.945L338.174 655.257C338.615 655.654 338.615 656.346 338.174 656.743L334.494 660.055C334.217 660.305 333.793 660.293 333.53 660.03C333.243 659.743 333.259 659.274 333.564 659.007L336.14 656.753C336.595 656.354 336.595 655.646 336.14 655.247L333.564 652.993Z" fill="#424549"/>
+                                <path d="M333.564 710.493C333.259 710.226 333.243 709.757 333.53 709.47C333.793 709.207 334.217 709.195 334.494 709.445L338.174 712.757C338.615 713.154 338.615 713.846 338.174 714.243L334.494 717.555C334.217 717.805 333.793 717.793 333.53 717.53C333.243 717.243 333.259 716.774 333.564 716.507L336.14 714.253C336.595 713.854 336.595 713.146 336.14 712.747L333.564 710.493Z" fill="#424549"/>
+                                <rect x="69" y="706" width="106" height="16" rx="8" fill="#424549"/>
+                                <rect x="37" y="705" width="18" height="18" rx="9" fill="#424549"/>
+                                <rect x="27" y="315" width="71" height="15" rx="7.5" fill="#424549"/>
+                                <rect x="27" y="290" width="329" height="1" rx="0.5" fill="#424549"/>
+                                </g>
+                                <defs>
+                                <clipPath id="clip0_30_2">
+                                <rect width="383" height="764" rx="21" fill="white"/>
+                                </clipPath>
+                                </defs>
+                                </svg>
+                            `;
+                            
+
+                            let effectContainer = document.createElement("div");
+
+                            effectContainer.classList.add('type-1-effect-preview')
+    
+                            effectContainer.innerHTML = `
+                                <div class="modal-profile-effect-preview"></div>
+                            `;
+
+                            effectContainer.appendChild(effectBG);
+
+                            modalPreviewContainer.appendChild(effectContainer);
+
+
+                            const effectPreview = effectContainer.querySelector('.modal-profile-effect-preview');
+
+
+                            if (productId && discordProfileEffectsCache) {
+                                // Find the profile effect configuration
+                                const profileEffect = findProfileEffectByProductId(discordProfileEffectsCache, productId);
+
+                                if (profileEffect) {
+                                    // Set container to full width and auto height
+                                    effectPreview.style.width = '100%';
+                                    effectPreview.style.height = '100%';
+                                    effectPreview.style.aspectRatio = '0.1';
+
+                                    // Create and initialize the profile effects card with card-level hover
+                                    const effectsCard = new ProfileEffectsCard(effectPreview, profileEffect, modalPreviewContainer);
+
+                                    // Store reference for cleanup if needed
+                                    card._profileEffectsCard = effectsCard;
+                                } else {
+                                    // Fallback if profile effect not found
+                                    effectPreview.innerHTML = ``;
+                                }
+                            } else {
+                                // Fallback if no product ID or cache
+                                effectPreview.innerHTML = ``;
+                            }
+                        }
+                    } else if (product.type === item_types.VARIANTS_GROUP) {
+
+                        modalPreviewContainer.classList.add('type-2000-preview-container')
+
+                        const variantContainer = modalInner.querySelector("[data-shop-card-var-container]");
+                        variantContainer.innerHTML = "";
+                        let currentSelectedVariant = null;
+
+                        product.variants.forEach((variant, index) => {
+
+                            let variantColorBlock = document.createElement("div");
+
+                            variantColorBlock.classList.add("shop-card-var");
+                            variantColorBlock.id = "shop-card-var";
+                            variantColorBlock.style.backgroundColor = `${variant.variant_value}`;
+                        
+                            // Add click event listener to switch variants
+                            variantColorBlock.addEventListener("click", () => {
+                                if (currentSelectedVariant) {
+                                    currentSelectedVariant.classList.remove("shop-card-var-selected");
+                                }
+                                variantColorBlock.classList.add("shop-card-var-selected");
+                                currentSelectedVariant = variantColorBlock;
+                                applyVariant(variant)
+                            });
+                        
+                            // Append the color block to the container
+                            variantContainer.appendChild(variantColorBlock);
+                        
+                            // Set the first variant as the default selected
+                            if (index === 0) {
+                                currentSelectedVariant = variantColorBlock;
+                                variantColorBlock.classList.add("shop-card-var-selected");
+                            }
+                        });
+
+                        function applyVariant(selectedVariant) {
+                            modalInner.querySelector("[data-shop-card-var-title]").textContent = `(${selectedVariant.variant_label})`;
+
+                            itemName.textContent = selectedVariant.base_variant_name;
+
+                            if (selectedVariant.type === 0) {
+
+                                modalInner.querySelector('.profile-avatar-deco-preview').src = `https://cdn.discordapp.com/avatar-decoration-presets/${selectedVariant.items[0].asset}.png?size=4096&passthrough=true`
+
+                                modalPreviewContainer.innerHTML = "";
+                                let decorationBundleContainer = document.createElement("div");
+    
+                                decorationBundleContainer.classList.add('type-0-preview-container')
+                            
+                                decorationBundleContainer.innerHTML = `
+                                    <div class="type-0-preview-background"></div>
+                                    <img class="type-0-preview" loading="lazy" src="https://cdn.discordapp.com/avatar-decoration-presets/${selectedVariant.items[0].asset}.png?size=4096&passthrough=false"></img>
+                                `;
+
+                                modalPreviewContainer.appendChild(decorationBundleContainer);
+
+                                // Add the avatar decoration based on the selected variant
+                                selectedVariant.items?.forEach(item => {
+                                    const decorationPreview = decorationBundleContainer.querySelector('.type-0-preview')
+                                    decorationPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${item.asset}.png?size=4096&passthrough=false`;
+
+                                    decorationBundleContainer.addEventListener("mouseenter", () => {
+                                        decorationPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${item.asset}.png?size=4096&passthrough=true`;
+                                    });
+                                    decorationBundleContainer.addEventListener("mouseleave", () => {
+                                        decorationPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${item.asset}.png?size=4096&passthrough=false`;
+                                    });
+                                });
+                            } else if (selectedVariant.type === 1) {
+                                
+                                if (modalInner.querySelector('.profile-avatar-deco-preview')) modalInner.querySelector('.profile-avatar-deco-preview').remove();
+
+                                modalInner.querySelector('.modal-preview-profile').style.height = '400px';
+
+                                modalInner.querySelector('.profile-profile-effects-preview').innerHTML = `
+                                    <div class="modal-profile-profile-effect-preview"></div>
+                                `;
+
+                                const profileProfileEffectPreview = modalInner.querySelector('.modal-profile-profile-effect-preview');
+
+                                // Get the product ID from the first item
+                                const productId = selectedVariant.items && selectedVariant.items[0] ? selectedVariant.items[0].id : null;
+
+                                if (productId && discordProfileEffectsCache) {
+                                    // Find the profile effect configuration
+                                    const profileEffect = findProfileEffectByProductId(discordProfileEffectsCache, productId);
+
+                                    if (profileEffect) {
+                                        // Set container to full width and auto height
+                                        profileProfileEffectPreview.style.width = '100%';
+                                        profileProfileEffectPreview.style.height = '100%';
+                                        profileProfileEffectPreview.style.aspectRatio = '0.1';
+
+                                        // Create and initialize the profile effects card with card-level hover
+                                        const effectsCard = new ProfileEffectsCard(profileProfileEffectPreview, profileEffect, document.querySelector('.something-nobody-is-gonna-hover'), {
+                                            startImmediately: true
+                                        });
+
+                                        // Store reference for cleanup if needed
+                                        document.querySelector('.something-nobody-is-gonna-hover')._profileEffectsCard = effectsCard;
+                                    } else {
+                                        // Fallback if profile effect not found
+                                        profileProfileEffectPreview.innerHTML = ``;
+                                    }
+                                } else {
+                                    // Fallback if no product ID or cache
+                                    profileProfileEffectPreview.innerHTML = ``;
+                                }
+
+
+
+                                modalPreviewContainer.innerHTML = "";
+                                previewContainer.classList.add('type-1-preview-container');
+
+                                let effectBG = document.createElement("div");
+
+                                effectBG.classList.add('type-1-effect-background')
+    
+                                effectBG.innerHTML = `
+                                    <svg width="383" height="764" viewBox="0 0 383 764" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <g clip-path="url(#clip0_30_2)">
+                                    <rect width="383" height="142" fill="#424549"/>
+                                    <rect y="142" width="383" height="625" fill="#282B30"/>
+                                    <rect x="21.5" y="90.5" width="99" height="99" rx="49.5" fill="#424549"/>
+                                    <rect x="21.5" y="90.5" width="99" height="99" rx="49.5" stroke="#282B30" stroke-width="7"/>
+                                    <path d="M90.5028 121.958C86.8115 120.235 82.9189 119.019 78.9189 118.335C78.3686 119.333 77.8719 120.358 77.429 121.411C73.1739 120.755 68.8383 120.755 64.5699 121.411C64.1269 120.358 63.6303 119.333 63.0799 118.335C59.0799 119.033 55.1739 120.249 51.4826 121.971C44.1537 133.015 42.1671 143.786 43.1604 154.407C47.4557 157.632 52.2611 160.093 57.3618 161.665C58.5162 160.093 59.5363 158.411 60.4088 156.662C58.7443 156.033 57.147 155.254 55.6168 154.338C56.0195 154.038 56.4088 153.737 56.798 153.436C65.7914 157.742 76.2075 157.742 85.2008 153.436C85.5901 153.75 85.9793 154.065 86.382 154.338C84.8518 155.254 83.2411 156.033 81.5766 156.676C82.4491 158.425 83.4693 160.093 84.6236 161.665C89.7377 160.093 94.5431 157.646 98.8384 154.407C100.006 142.091 96.8519 131.43 90.4894 121.958H90.5028ZM61.684 147.873C58.9189 147.873 56.6235 145.317 56.6235 142.173C56.6235 139.03 58.8249 136.446 61.6705 136.446C64.5162 136.446 66.7846 139.03 66.7309 142.173C66.6773 145.317 64.5028 147.873 61.684 147.873ZM80.3417 147.873C77.5632 147.873 75.2947 145.317 75.2947 142.173C75.2947 139.03 77.4961 136.446 80.3417 136.446C83.1874 136.446 85.4424 139.03 85.3887 142.173C85.335 145.317 83.1605 147.873 80.3417 147.873Z" fill="#929292"/>
+                                    <rect x="90.5" y="159.5" width="23" height="23" rx="11.5" fill="#289960"/>
+                                    <rect x="90.5" y="159.5" width="23" height="23" rx="11.5" stroke="#282B30" stroke-width="5"/>
+                                    <rect x="12" y="208" width="359" height="540" rx="9" fill="#1E2124"/>
+                                    <rect x="27" y="222" width="168" height="25" rx="10" fill="#424549"/>
+                                    <rect x="27" y="405" width="106" height="25" rx="10" fill="#424549"/>
+                                    <rect x="120" y="482" width="107" height="29" rx="10" fill="#424549"/>
+                                    <rect x="27" y="476" width="74" height="74" rx="10" fill="#424549"/>
+                                    <rect x="27" y="565" width="329" height="36" rx="4" fill="#282B30"/>
+                                    <rect x="27" y="336" width="316" height="25" rx="10" fill="#424549"/>
+                                    <rect x="27" y="252" width="83" height="15" rx="7.5" fill="#424549"/>
+                                    <rect x="27" y="384" width="186" height="15" rx="7.5" fill="#424549"/>
+                                    <rect x="27" y="453" width="118" height="15" rx="7.5" fill="#424549"/>
+                                    <rect x="120" y="517" width="69" height="18" rx="9" fill="#424549"/>
+                                    <rect x="37" y="647" width="18" height="18" rx="9" fill="#424549"/>
+                                    <rect x="69" y="648" width="106" height="16" rx="8" fill="#424549"/>
+                                    <path d="M333.564 652.993C333.259 652.726 333.243 652.257 333.53 651.97C333.793 651.707 334.217 651.695 334.494 651.945L338.174 655.257C338.615 655.654 338.615 656.346 338.174 656.743L334.494 660.055C334.217 660.305 333.793 660.293 333.53 660.03C333.243 659.743 333.259 659.274 333.564 659.007L336.14 656.753C336.595 656.354 336.595 655.646 336.14 655.247L333.564 652.993Z" fill="#424549"/>
+                                    <path d="M333.564 710.493C333.259 710.226 333.243 709.757 333.53 709.47C333.793 709.207 334.217 709.195 334.494 709.445L338.174 712.757C338.615 713.154 338.615 713.846 338.174 714.243L334.494 717.555C334.217 717.805 333.793 717.793 333.53 717.53C333.243 717.243 333.259 716.774 333.564 716.507L336.14 714.253C336.595 713.854 336.595 713.146 336.14 712.747L333.564 710.493Z" fill="#424549"/>
+                                    <rect x="69" y="706" width="106" height="16" rx="8" fill="#424549"/>
+                                    <rect x="37" y="705" width="18" height="18" rx="9" fill="#424549"/>
+                                    <rect x="27" y="315" width="71" height="15" rx="7.5" fill="#424549"/>
+                                    <rect x="27" y="290" width="329" height="1" rx="0.5" fill="#424549"/>
+                                    </g>
+                                    <defs>
+                                    <clipPath id="clip0_30_2">
+                                    <rect width="383" height="764" rx="21" fill="white"/>
+                                    </clipPath>
+                                    </defs>
+                                    </svg>
+                                `;
+
+
+                                let effectContainer = document.createElement("div");
+
+                                effectContainer.classList.add('type-1-effect-preview')
+    
+                                effectContainer.innerHTML = `
+                                    <div class="modal-profile-effect-preview"></div>
+                                `;
+
+                                effectContainer.appendChild(effectBG);
+
+                                modalPreviewContainer.appendChild(effectContainer);
+
+
+                                const effectPreview = effectContainer.querySelector('.modal-profile-effect-preview');
+
+
+                                if (productId && discordProfileEffectsCache) {
+                                    // Find the profile effect configuration
+                                    const profileEffect = findProfileEffectByProductId(discordProfileEffectsCache, productId);
+
+                                    if (profileEffect) {
+                                        // Set container to full width and auto height
+                                        effectPreview.style.width = '100%';
+                                        effectPreview.style.height = '100%';
+                                        effectPreview.style.aspectRatio = '0.1';
+
+                                        // Create and initialize the profile effects card with card-level hover
+                                        const effectsCard = new ProfileEffectsCard(effectPreview, profileEffect, effectContainer);
+
+                                        // Store reference for cleanup if needed
+                                        effectContainer._profileEffectsCard = effectsCard;
+                                    } else {
+                                        // Fallback if profile effect not found
+                                        effectPreview.innerHTML = ``;
+                                    }
+                                } else {
+                                    // Fallback if no product ID or cache
+                                    effectPreview.innerHTML = ``;
+                                }
+                            }
+                        }
+                    
+                        // Apply the default variant (first one) initially
+                        if (product.variants.length > 0) {
+                            applyVariant(product.variants[0]);
+                        }
+
                     }
+
+                } else {
+                    modal.querySelector('#modalv2-inner-content').innerHTML = `
+                        <div class="view-raw-modalv2-inner">
+                            <textarea class="view-raw-modal-textbox" readonly>${JSON.stringify(product, undefined, 4)}</textarea>
+                        </div>
+                    `;
                 }
+            }
 
-                modal.querySelector('#modalv2-tab-1').addEventListener("click", function () {
-                    changeModalTab('1');
-                });
-                modal.querySelector('#modalv2-tab-2').addEventListener("click", function () {
-                    changeModalTab('2');
-                });
-
+            modal.querySelector('#modalv2-tab-1').addEventListener("click", function () {
                 changeModalTab('1');
+            });
+            modal.querySelector('#modalv2-tab-2').addEventListener("click", function () {
+                changeModalTab('2');
+            });
 
-                document.body.appendChild(modal);
+            changeModalTab('1');
 
-                setTimeout(() => {
-                    modal.classList.add('show');
-                }, 1);
-                
+            document.body.appendChild(modal);
 
-
-                let modal_back = document.createElement("div");
-
-                modal_back.classList.add('modalv2-back');
-                modal_back.id = 'modalv2-back';
-
-                document.body.appendChild(modal_back);
-
-                setTimeout(() => {
-                    modal_back.classList.add('show');
-                }, 1);
+            setTimeout(() => {
+                modal.classList.add('show');
+            }, 1);
+            
 
 
-                modal.addEventListener('click', (event) => {
-                    if (event.target === modal) {
-                        modal.classList.remove('show');
-                        modal_back.classList.remove('show');
-                        setTimeout(() => {
-                            modal.remove();
-                            modal_back.remove();
-                        }, 300);
-                        removeParams('itemSkuId');
-                        modalIsAlreadyOpen = false;
-                    }
-                });
+            let modal_back = document.createElement("div");
 
-                document.querySelector("[data-close-product-card-button]").addEventListener('click', () => {
+            modal_back.classList.add('modalv2-back');
+            modal_back.id = 'modalv2-back';
+
+            document.body.appendChild(modal_back);
+
+            setTimeout(() => {
+                modal_back.classList.add('show');
+            }, 1);
+
+
+            modal.addEventListener('click', (event) => {
+                if (event.target === modal) {
                     modal.classList.remove('show');
                     modal_back.classList.remove('show');
                     setTimeout(() => {
                         modal.remove();
                         modal_back.remove();
                     }, 300);
-                });
-            }
+                    removeParams('itemSkuId');
+                    currentOpenModalId = null;
+                }
+            });
 
-        });
+            document.querySelector("[data-close-product-card-button]").addEventListener('click', () => {
+                modal.classList.remove('show');
+                modal_back.classList.remove('show');
+                setTimeout(() => {
+                    modal.remove();
+                    modal_back.remove();
+                }, 300);
+                removeParams('itemSkuId');
+                currentOpenModalId = null;
+            });
+        }
 
 
         return card;
@@ -1421,6 +2109,7 @@ async function loadSite() {
                 const category = document.createElement("div");
                 category.classList.add('category-container');
                 category.setAttribute('data-sku-id', categoryData.sku_id);
+                category.setAttribute('data-listing-id', categoryData.store_listing_id);
     
                 let categoryBanner = categoryData.banner_asset?.static ??
                     `https://cdn.discordapp.com/app-assets/1096190356233670716/${categoryData.banner}.png?size=4096`;
@@ -1527,147 +2216,192 @@ async function loadSite() {
 
                 bannerContainer.addEventListener("click", function () {
                     openProductModal();
-                    addParams({itemSkuId: categoryData.sku_id})
-        
-                    async function openProductModal() {
-                        let modal = document.createElement("div");
-        
-                        modal.classList.add('category-modal');
-        
-                        modal.innerHTML = `
-                            <div class="category-modal-inner">
-                                <div class="modalv2-tabs-container">
-                                    <div class="tab selected" id="category-modal-tab-1">
-                                        <svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <circle cx="12" cy="24" r="6" fill="currentColor"/>
-                                            <circle cx="12" cy="72" r="6" fill="currentColor"/>
-                                            <circle cx="12" cy="48" r="6" fill="currentColor"/>
-                                            <rect x="28" y="20" width="60" height="8" rx="4" fill="currentColor"/>
-                                            <path d="M72.124 44.0029C64.5284 44.0668 57.6497 47.1046 52.6113 52H32C29.7909 52 28 50.2091 28 48C28 45.7909 29.7909 44 32 44H72C72.0415 44 72.0828 44.0017 72.124 44.0029Z" fill="currentColor"/>
-                                            <path d="M44.2852 68C44.0983 69.3065 44 70.6418 44 72C44 73.3582 44.0983 74.6935 44.2852 76H32C29.7909 76 28 74.2091 28 72C28 69.7909 29.7909 68 32 68H44.2852Z" fill="currentColor"/>
-                                            <circle cx="72" cy="72" r="16" stroke="currentColor" stroke-width="8"/>
-                                            <rect x="81" y="85.9497" width="7" height="16" rx="3.5" transform="rotate(-45 81 85.9497)" fill="currentColor"/>
-                                        </svg>
-                                        <p>Details</p>
-                                    </div>
-                                    <div class="tab" id="category-modal-tab-3">
-                                        <svg aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
-                                            <path fill="currentColor" d="m13.96 5.46 4.58 4.58a1 1 0 0 0 1.42 0l1.38-1.38a2 2 0 0 0 0-2.82l-3.18-3.18a2 2 0 0 0-2.82 0l-1.38 1.38a1 1 0 0 0 0 1.42ZM2.11 20.16l.73-4.22a3 3 0 0 1 .83-1.61l7.87-7.87a1 1 0 0 1 1.42 0l4.58 4.58a1 1 0 0 1 0 1.42l-7.87 7.87a3 3 0 0 1-1.6.83l-4.23.73a1.5 1.5 0 0 1-1.73-1.73Z" class=""></path>
-                                        </svg>
-                                        <p>Assets</p>
-                                    </div>
-                                    <div class="tab disabled has-tooltip" data-tooltip="Reviews have been disabled for this category" id="category-modal-tab-4">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path fill="currentColor" d="M8 3C7.44771 3 7 3.44772 7 4V5C7 5.55228 7.44772 6 8 6H16C16.5523 6 17 5.55228 17 5V4C17 3.44772 16.5523 3 16 3H15.1245C14.7288 3 14.3535 2.82424 14.1002 2.52025L13.3668 1.64018C13.0288 1.23454 12.528 1 12 1C11.472 1 10.9712 1.23454 10.6332 1.64018L9.8998 2.52025C9.64647 2.82424 9.27121 3 8.8755 3H8Z"></path><path fill-rule="evenodd" clip-rule="evenodd" fill="currentColor" d="M19 4.49996V4.99996C19 6.65681 17.6569 7.99996 16 7.99996H8C6.34315 7.99996 5 6.65681 5 4.99996V4.49996C5 4.22382 4.77446 3.99559 4.50209 4.04109C3.08221 4.27826 2 5.51273 2 6.99996V19C2 20.6568 3.34315 22 5 22H19C20.6569 22 22 20.6568 22 19V6.99996C22 5.51273 20.9178 4.27826 19.4979 4.04109C19.2255 3.99559 19 4.22382 19 4.49996ZM8 12C7.44772 12 7 12.4477 7 13C7 13.5522 7.44772 14 8 14H16C16.5523 14 17 13.5522 17 13C17 12.4477 16.5523 12 16 12H8ZM7 17C7 16.4477 7.44772 16 8 16H13C13.5523 16 14 16.4477 14 17C14 17.5522 13.5523 18 13 18H8C7.44772 18 7 17.5522 7 17Z"></path>
-                                        </svg>
-                                        <p>Reviews</p>
-                                    </div>
-                                    <div class="tab hidden disabled has-tooltip" data-tooltip="There are currently no XP rewards for this category" id="category-modal-tab-5">
-                                        <svg width="27" height="27" viewBox="0 0 27 27" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M13.5 0L17.1462 9.85378L27 13.5L17.1462 17.1462L13.5 27L9.85378 17.1462L0 13.5L9.85378 9.85378L13.5 0Z" fill="currentColor"></path>
-                                        </svg>
-                                        <p>Rewards</p>
-                                    </div>
-                                    <div class="tab" id="category-modal-tab-2">
-                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M15.7376 3.18925C15.4883 2.93731 15.0814 2.93686 14.8316 3.18824L14.0087 4.01625C13.7618 4.26471 13.7614 4.66581 14.0078 4.91476L20.3804 11.3527C20.6265 11.6013 20.6265 12.0017 20.3804 12.2503L14.0078 18.6882C13.7614 18.9373 13.7618 19.3383 14.0087 19.5867L14.8316 20.4148C15.0814 20.6662 15.4883 20.6658 15.7376 20.4138L23.815 12.2503C24.061 12.0016 24.061 11.6014 23.815 11.3528L15.7376 3.18925Z" fill="currentColor"/>
-                                            <path d="M9.99171 4.91476C10.2381 4.66581 10.2377 4.26471 9.99081 4.01625L9.16787 3.18824C8.91804 2.93686 8.51118 2.93731 8.2619 3.18925L0.184466 11.3528C-0.0614893 11.6014 -0.061488 12.0016 0.184466 12.2503L8.2619 20.4138C8.51118 20.6658 8.91803 20.6662 9.16787 20.4148L9.99081 19.5867C10.2377 19.3383 10.2381 18.9373 9.99171 18.6882L3.61906 12.2503C3.37298 12.0017 3.37298 11.6013 3.61906 11.3527L9.99171 4.91476Z" fill="currentColor"/>
-                                        </svg>
-                                        <p>Raw</p>
-                                    </div>
-                                </div>
+                });
 
-                                <img class="category-modal-banner-preview" src="${modalBanner}">
-                                
-                                <div id="category-modal-inner-content">
-                                </div>
+                if (currentOpenModalId === categoryData.sku_id) {
+                    setTimeout(() => {
+                        openProductModal();
+                    }, 500);
+                }
+
+                async function openProductModal() {
+
+                    addParams({itemSkuId: categoryData.sku_id})
+
+                    let modal = document.createElement("div");
         
-                                <div data-modal-top-product-buttons>
-                                    <div class="has-tooltip" data-tooltip="Close" data-close-product-card-button>
-                                        <svg class="modalv2_top_icon" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M17.3 18.7a1 1 0 0 0 1.4-1.4L13.42 12l5.3-5.3a1 1 0 0 0-1.42-1.4L12 10.58l-5.3-5.3a1 1 0 0 0-1.4 1.42L10.58 12l-5.3 5.3a1 1 0 1 0 1.42 1.4L12 13.42l5.3 5.3Z" class=""></path></svg>
+                    modal.classList.add('category-modal');
+        
+                    modal.innerHTML = `
+                        <div class="category-modal-inner">
+                            <div class="modalv2-tabs-container">
+                                <div class="tab selected" id="category-modal-tab-1">
+                                    <svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <circle cx="12" cy="24" r="6" fill="currentColor"/>
+                                        <circle cx="12" cy="72" r="6" fill="currentColor"/>
+                                        <circle cx="12" cy="48" r="6" fill="currentColor"/>
+                                        <rect x="28" y="20" width="60" height="8" rx="4" fill="currentColor"/>
+                                        <path d="M72.124 44.0029C64.5284 44.0668 57.6497 47.1046 52.6113 52H32C29.7909 52 28 50.2091 28 48C28 45.7909 29.7909 44 32 44H72C72.0415 44 72.0828 44.0017 72.124 44.0029Z" fill="currentColor"/>
+                                        <path d="M44.2852 68C44.0983 69.3065 44 70.6418 44 72C44 73.3582 44.0983 74.6935 44.2852 76H32C29.7909 76 28 74.2091 28 72C28 69.7909 29.7909 68 32 68H44.2852Z" fill="currentColor"/>
+                                        <circle cx="72" cy="72" r="16" stroke="currentColor" stroke-width="8"/>
+                                        <rect x="81" y="85.9497" width="7" height="16" rx="3.5" transform="rotate(-45 81 85.9497)" fill="currentColor"/>
+                                    </svg>
+                                    <p>Details</p>
+                                </div>
+                                <div class="tab" id="category-modal-tab-3">
+                                    <svg aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
+                                        <path fill="currentColor" d="m13.96 5.46 4.58 4.58a1 1 0 0 0 1.42 0l1.38-1.38a2 2 0 0 0 0-2.82l-3.18-3.18a2 2 0 0 0-2.82 0l-1.38 1.38a1 1 0 0 0 0 1.42ZM2.11 20.16l.73-4.22a3 3 0 0 1 .83-1.61l7.87-7.87a1 1 0 0 1 1.42 0l4.58 4.58a1 1 0 0 1 0 1.42l-7.87 7.87a3 3 0 0 1-1.6.83l-4.23.73a1.5 1.5 0 0 1-1.73-1.73Z" class=""></path>
+                                    </svg>
+                                    <p>Assets</p>
+                                </div>
+                                <div class="tab disabled has-tooltip" data-tooltip="Reviews have been disabled for this category" id="category-modal-tab-4">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path fill="currentColor" d="M8 3C7.44771 3 7 3.44772 7 4V5C7 5.55228 7.44772 6 8 6H16C16.5523 6 17 5.55228 17 5V4C17 3.44772 16.5523 3 16 3H15.1245C14.7288 3 14.3535 2.82424 14.1002 2.52025L13.3668 1.64018C13.0288 1.23454 12.528 1 12 1C11.472 1 10.9712 1.23454 10.6332 1.64018L9.8998 2.52025C9.64647 2.82424 9.27121 3 8.8755 3H8Z"></path><path fill-rule="evenodd" clip-rule="evenodd" fill="currentColor" d="M19 4.49996V4.99996C19 6.65681 17.6569 7.99996 16 7.99996H8C6.34315 7.99996 5 6.65681 5 4.99996V4.49996C5 4.22382 4.77446 3.99559 4.50209 4.04109C3.08221 4.27826 2 5.51273 2 6.99996V19C2 20.6568 3.34315 22 5 22H19C20.6569 22 22 20.6568 22 19V6.99996C22 5.51273 20.9178 4.27826 19.4979 4.04109C19.2255 3.99559 19 4.22382 19 4.49996ZM8 12C7.44772 12 7 12.4477 7 13C7 13.5522 7.44772 14 8 14H16C16.5523 14 17 13.5522 17 13C17 12.4477 16.5523 12 16 12H8ZM7 17C7 16.4477 7.44772 16 8 16H13C13.5523 16 14 16.4477 14 17C14 17.5522 13.5523 18 13 18H8C7.44772 18 7 17.5522 7 17Z"></path>
+                                    </svg>
+                                    <p>Reviews</p>
+                                </div>
+                                <div class="tab hidden disabled has-tooltip" data-tooltip="There are currently no XP rewards for this category" id="category-modal-tab-5">
+                                    <svg width="27" height="27" viewBox="0 0 27 27" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M13.5 0L17.1462 9.85378L27 13.5L17.1462 17.1462L13.5 27L9.85378 17.1462L0 13.5L9.85378 9.85378L13.5 0Z" fill="currentColor"></path>
+                                    </svg>
+                                    <p>Rewards</p>
+                                </div>
+                                <div class="tab" id="category-modal-tab-2">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M15.7376 3.18925C15.4883 2.93731 15.0814 2.93686 14.8316 3.18824L14.0087 4.01625C13.7618 4.26471 13.7614 4.66581 14.0078 4.91476L20.3804 11.3527C20.6265 11.6013 20.6265 12.0017 20.3804 12.2503L14.0078 18.6882C13.7614 18.9373 13.7618 19.3383 14.0087 19.5867L14.8316 20.4148C15.0814 20.6662 15.4883 20.6658 15.7376 20.4138L23.815 12.2503C24.061 12.0016 24.061 11.6014 23.815 11.3528L15.7376 3.18925Z" fill="currentColor"/>
+                                        <path d="M9.99171 4.91476C10.2381 4.66581 10.2377 4.26471 9.99081 4.01625L9.16787 3.18824C8.91804 2.93686 8.51118 2.93731 8.2619 3.18925L0.184466 11.3528C-0.0614893 11.6014 -0.061488 12.0016 0.184466 12.2503L8.2619 20.4138C8.51118 20.6658 8.91803 20.6662 9.16787 20.4148L9.99081 19.5867C10.2377 19.3383 10.2381 18.9373 9.99171 18.6882L3.61906 12.2503C3.37298 12.0017 3.37298 11.6013 3.61906 11.3527L9.99171 4.91476Z" fill="currentColor"/>
+                                    </svg>
+                                    <p>Raw</p>
+                                </div>
+                            </div>
+
+                            <img class="category-modal-banner-preview" src="${modalBanner}">
+                            
+                            <div id="category-modal-inner-content">
+                                <div class="category-modal-bottom-container">
+                                    <div class="shop-card-tag-container" data-shop-card-tag-container></div>
+                                    <p class="sku_id has-tooltip" data-tooltip="Click To Copy" onclick="copyValue('${categoryData.sku_id}')">${categoryData.sku_id}</p>
+                                    <h1>${categoryData.name}</h1>
+                                    <p>${categoryData.summary ? categoryData.summary : ''}</p>
+                                    <div class="category-modal-quick-info-d-container">
+                                        <p>Prices</p>
+                                        <p>Products</p>
+                                        <p>Community Rating</p>
                                     </div>
                                 </div>
                             </div>
-                        `;
         
-                        function changeModalTab(tab) {
-                            modal.querySelectorAll('.selected').forEach((el) => {
-                                el.classList.remove("selected");
-                            });
+                            <div data-modal-top-product-buttons>
+                                <div class="has-tooltip" data-tooltip="Close" data-close-product-card-button>
+                                    <svg class="modalv2_top_icon" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M17.3 18.7a1 1 0 0 0 1.4-1.4L13.42 12l5.3-5.3a1 1 0 0 0-1.42-1.4L12 10.58l-5.3-5.3a1 1 0 0 0-1.4 1.42L10.58 12l-5.3 5.3a1 1 0 1 0 1.42 1.4L12 13.42l5.3 5.3Z" class=""></path></svg>
+                                </div>
+                            </div>
+                        </div>
+                    `;
         
-                            modal.querySelector('#category-modal-tab-'+tab).classList.add('selected');
+                    function changeModalTab(tab) {
+                        modal.querySelectorAll('.selected').forEach((el) => {
+                            el.classList.remove("selected");
+                        });
         
-                            const modalInner = modal.querySelector('#category-modal-inner-content');
+                        modal.querySelector('#category-modal-tab-'+tab).classList.add('selected');
         
-                            if (tab === '1') {
-                                modalInner.innerHTML = `
-                                    <div class="category-modal-bottom-container">
-                                        <div class="shop-card-tag-container" data-shop-card-tag-container></div>
-                                        <p class="sku_id has-tooltip" data-tooltip="Click To Copy" onclick="copyValue('${categoryData.sku_id}')">${categoryData.sku_id}</p>
-                                        <h1>${categoryData.name}</h1>
-                                        <p>${categoryData.summary ? categoryData.summary : ''}</p>
-                                        <div class="category-modal-quick-info-d-container">
-                                            <p>Prices (Excluding Bundles)</p>
-                                            <p>Products</p>
-                                            <p>Community Rating</p>
+                        const modalInner = modal.querySelector('#category-modal-inner-content');
+        
+                        if (tab === '1') {
+                            modalInner.innerHTML = `
+                                <div class="category-modal-bottom-container">
+                                    <div class="shop-card-tag-container" data-shop-card-tag-container></div>
+                                    <p class="sku_id has-tooltip" data-tooltip="Click To Copy" onclick="copyValue('${categoryData.sku_id}')">${categoryData.sku_id}</p>
+                                    <h1>${categoryData.name}</h1>
+                                    <p>${categoryData.summary ? categoryData.summary : ''}</p>
+                                    <div class="category-modal-quick-info-d-container">
+                                        <p class="quick-info-prices-title">Prices</p>
+                                        <p>Products</p>
+                                        <p>Community Rating</p>
+                                    </div>
+                                    <div class="category-modal-quick-info-container">
+                                        <div class="block">
+                                            <div class="price-titles">
+                                                <p>Standard</p>
+                                                <p>Nitro</p>
+                                            </div>
+                                            <div id="price-detail-block">
+                                                
+                                            </div>
                                         </div>
-                                        <div class="category-modal-quick-info-container">
-                                            <div class="block">
-                                                <div id="price-detail-block">
-                                                    
-                                                </div>
+                                        <div class="block">
+                                            <div id="products-details-block">
+                                                
                                             </div>
-                                            <div class="block">
-                                                <div id="products-details-block">
-                                                    
-                                                </div>
-                                            </div>
-                                            <div class="block">
-                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                    <g clip-path="url(#clip0_58_258)">
-                                                    <path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="#FFEC3E"/>
-                                                    </g>
-                                                    <defs>
-                                                    <clipPath id="clip0_58_258">
-                                                    <rect width="24" height="24" fill="white"/>
-                                                    </clipPath>
-                                                    </defs>
-                                                </svg>
-                                                <h2 id="average-rating">N/A</h2>
-                                                <h2>/</h2>
-                                                <h1>5</h1>
-                                            </div>
+                                        </div>
+                                        <div class="block">
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <g clip-path="url(#clip0_58_258)">
+                                                <path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="#FFEC3E"/>
+                                                </g>
+                                                <defs>
+                                                <clipPath id="clip0_58_258">
+                                                <rect width="24" height="24" fill="white"/>
+                                                </clipPath>
+                                                </defs>
+                                            </svg>
+                                            <h2 id="average-rating">N/A</h2>
+                                            <h2>/</h2>
+                                            <h1>5</h1>
                                         </div>
                                     </div>
+                                </div>
+                            `;
+
+                            if (firstTimeOpeningModal) {
+                                modalInner.querySelectorAll('.block').forEach((el) => {
+                                    el.classList.add("animated");
+                                });
+                            }
+
+                            const pricesDetailBlock = modalInner.querySelector('#price-detail-block');
+                            const cardTag = modalInner.querySelector("[data-shop-card-tag-container]");
+
+                            if (pricesDetailBlock) {
+                                let standardUS = 0;
+                                let standardOrb = 0;
+
+                                let nitroUS = 0;
+                                let nitroOrb = 0;
+
+                                cardTag.innerHTML = `
+                                    <p class="shop-card-tag">ORBS EXCLUSIVES</p>
                                 `;
+                                
+                                categoryData.products.forEach(product => {
+                                    if (!product.prices) {
+                                        return;
+                                    }
+                                    if (product.type === item_types.AVATAR_DECORATION || product.type === item_types.PROFILE_EFFECT || product.type === item_types.NAMEPLATE || product.type === item_types.EXTERNAL_SKU) {
 
-                                if (firstTimeOpeningModal) {
-                                    modalInner.querySelectorAll('.block').forEach((el) => {
-                                        el.classList.add("animated");
-                                    });
-                                }
+                                        product.prices["0"]?.country_prices?.prices?.forEach(price => {
+                                            if (price.currency === "usd") {
+                                                standardUS += price.amount;
+                                            }
+                                            if (price.currency === "discord_orb") {
+                                                standardOrb += price.amount;
+                                            }
+                                        });
 
-                                const pricesDetailBlock = modalInner.querySelector('#price-detail-block');
-                                const cardTag = modalInner.querySelector("[data-shop-card-tag-container]");
+                                        product.prices["4"]?.country_prices?.prices?.forEach(price => {
+                                            if (price.currency === "usd") {
+                                                nitroUS += price.amount;
+                                            }
+                                            if (price.currency === "discord_orb") {
+                                                nitroOrb += price.amount;
+                                            }
+                                        });
 
-                                if (pricesDetailBlock) {
-                                    let standardUS = 0;
-                                    let standardOrb = 0;
+                                    } else if (product.type === item_types.VARIANTS_GROUP) {
+                                        product.variants.forEach(variant => {
 
-                                    let nitroUS = 0;
-                                    let nitroOrb = 0;
-
-                                    cardTag.innerHTML = `
-                                        <p class="shop-card-tag">ORBS EXCLUSIVES</p>
-                                    `;
-                                    
-                                    categoryData.products.forEach(product => {
-                                        if (!product.prices) {
-                                            return;
-                                        }
-                                        if (product.type === 0 || product.type === 1 || product.type === 2 || product.type === 3000) {
-
-                                            product.prices["0"]?.country_prices?.prices?.forEach(price => {
+                                            variant.prices["0"]?.country_prices?.prices?.forEach(price => {
                                                 if (price.currency === "usd") {
                                                     standardUS += price.amount;
                                                 }
@@ -1675,8 +2409,8 @@ async function loadSite() {
                                                     standardOrb += price.amount;
                                                 }
                                             });
-
-                                            product.prices["4"]?.country_prices?.prices?.forEach(price => {
+    
+                                            variant.prices["4"]?.country_prices?.prices?.forEach(price => {
                                                 if (price.currency === "usd") {
                                                     nitroUS += price.amount;
                                                 }
@@ -1685,236 +2419,325 @@ async function loadSite() {
                                                 }
                                             });
 
-                                        } else if (product.type === 2000) {
-                                            product.variants.forEach(variant => {
+                                        });
+                                    }
 
-                                                variant.prices["0"]?.country_prices?.prices?.forEach(price => {
-                                                    if (price.currency === "usd") {
-                                                        standardUS += price.amount;
-                                                    }
-                                                    if (price.currency === "discord_orb") {
-                                                        standardOrb += price.amount;
-                                                    }
-                                                });
-    
-                                                variant.prices["4"]?.country_prices?.prices?.forEach(price => {
-                                                    if (price.currency === "usd") {
-                                                        nitroUS += price.amount;
-                                                    }
-                                                    if (price.currency === "discord_orb") {
-                                                        nitroOrb += price.amount;
-                                                    }
-                                                });
+                                    if (product.type === item_types.BUNDLE) {
+                                        modalInner.querySelector('.quick-info-prices-title').textContent = 'Prices (Excluding Bundles)'
+                                    }
+                                });
 
-                                            });
-                                        }
+                                const standardPriceOutput = `US$${(standardUS / 100).toFixed(2)}`;
+                                const nitroPriceOutput = `US$${(nitroUS / 100).toFixed(2)}`;
+
+                                pricesDetailBlock.innerHTML = `
+                                    <div class="raw-price-container" id="standardUS">
+                                        <h3>${standardPriceOutput}</h3>
+                                    </div>
+                                    <div class="raw-price-container" id="nitroUS">
+                                        <h3>${nitroPriceOutput}</h3>
+                                    </div>
+                                    <div class="raw-price-container" id="standardOrb">
+                                        <div class="orb-icon"></div>
+                                        <h3>${standardOrb}</h3>
+                                    </div>
+                                    <div class="raw-price-container" id="nitroOrb">
+                                        <div class="orb-icon"></div>
+                                        <h3>${nitroOrb}</h3>
+                                    </div>
+                                `;
+
+                                if (standardUS === 0) {
+                                    pricesDetailBlock.querySelector('#standardUS').classList.add('hidden');
+                                }
+                                if (nitroUS === 0) {
+                                    pricesDetailBlock.querySelector('#nitroUS').classList.add('hidden');
+                                }
+
+                                if (standardOrb === 0) {
+                                    cardTag.innerHTML = ``;
+                                    pricesDetailBlock.querySelector('#standardOrb').classList.add('hidden');
+                                }
+                                if (nitroOrb === 0) {
+                                    cardTag.innerHTML = ``;
+                                    pricesDetailBlock.querySelector('#nitroOrb').classList.add('hidden');
+                                }
+
+                                if (standardUS != 0 || nitroUS != 0) {
+                                    cardTag.innerHTML = ``;
+                                }
+                            }
+
+
+                            const productsDetailBlock = modalInner.querySelector('#products-details-block');
+
+                            if (productsDetailBlock) {
+                                let total = 0;
+
+                                let type0count = 0;
+                                let type1count = 0;
+                                let type2count = 0;
+                                let type1000count = 0;
+                                let type3000count = 0;
+                                
+                                categoryData.products.forEach(product => {
+                                    if (product.type === 0) {
+                                        total += 1;
+                                        type0count += 1;
+                                    } else if (product.type === 1) {
+                                        total += 1;
+                                        type1count += 1;
+                                    } else if (product.type === 2) {
+                                        total += 1;
+                                        type2count += 1;
+                                    } else if (product.type === 1000) {
+                                        total += 1;
+                                        type1000count += 1;
+                                    } else if (product.type === 3000) {
+                                        total += 1;
+                                        type3000count += 1;
+                                    } else if (product.type === 2000) {
+                                        product.variants.forEach(variant => {
+                                            total += 1;
+                                            if (variant.type === 0) {
+                                                type0count += 1;
+                                            } else if (variant.type === 1) {
+                                                type1count += 1;
+                                            }
+                                        });
+                                    }
+                                });
+
+                                let totalItems = document.createElement("h1");
+        
+                                totalItems.textContent = '0';
+        
+                                productsDetailBlock.appendChild(totalItems);
+
+                                if (firstTimeOpeningModal) {
+                                    animateNumber(totalItems, total, 1500);
+                                } else {
+                                    totalItems.textContent = total;
+                                }
+
+                                if (type0count) {
+                                    let itemCount = document.createElement("p");
+        
+                                    itemCount.textContent = 'Avatar Decorations: '+type0count;
+        
+                                    productsDetailBlock.appendChild(itemCount);
+                                }
+                                if (type1count) {
+                                    let itemCount = document.createElement("p");
+        
+                                    itemCount.textContent = 'Profile Effects: '+type1count;
+        
+                                    productsDetailBlock.appendChild(itemCount);
+                                }
+                                if (type2count) {
+                                    let itemCount = document.createElement("p");
+        
+                                    itemCount.textContent = 'Nameplates: '+type2count;
+        
+                                    productsDetailBlock.appendChild(itemCount);
+                                }
+                                if (type1000count) {
+                                    let itemCount = document.createElement("p");
+        
+                                    itemCount.textContent = 'Bundles: '+type1000count;
+        
+                                    productsDetailBlock.appendChild(itemCount);
+                                }
+                                if (type3000count) {
+                                    let itemCount = document.createElement("p");
+        
+                                    itemCount.textContent = 'External SKUs: '+type3000count;
+        
+                                    productsDetailBlock.appendChild(itemCount);
+                                }
+                            }
+        
+                            const sku_id = modalInner.querySelector('.sku_id');
+        
+                            sku_id.addEventListener("click", function () {
+                                sku_id.classList.add('clicked');
+                                setTimeout(() => {
+                                    sku_id.classList.remove('clicked');
+                                }, 500);
+                            });
+        
+                            if (categoryModalInfo.reviews_disabled != true || settingsStore.staff_force_viewable_reviews_tab === 1) {
+                                const reviewsTab = modal.querySelector('#category-modal-tab-4');
+                                reviewsTab.classList.remove('disabled');
+                                reviewsTab.classList.remove('has-tooltip');
+                                reviewsTab.addEventListener("click", function () {
+                                    // Reviews
+                                    changeModalTab('4');
+                                });
+                                  
+                                let total = 0;
+                                  
+                                categoryModalInfo.reviews.forEach(review => {
+                                    total += review.rating;
+                                });
+                                  
+                                const average = categoryModalInfo.reviews.length > 0 ? (total / categoryModalInfo.reviews.length).toFixed(1) : 'N/A';
+
+                                modalInner.querySelector('#average-rating').textContent = '0';
+
+                                if (firstTimeOpeningModal && average != 'N/A') {
+                                    animateNumber(modalInner.querySelector('#average-rating'), average, 1500, {
+                                        useDecimals: true
                                     });
+                                } else {
+                                    modalInner.querySelector('#average-rating').textContent = average;
+                                }
+                                  
+                            }
+        
+                        } else if (tab === '2') {
+                            modalInner.innerHTML = `
+                                <div class="view-raw-modalv2-inner">
+                                    <textarea class="view-raw-modal-textbox" readonly>${JSON.stringify(categoryData, undefined, 4)}</textarea>
+                                </div>
+                            `;
+                        } else if (tab === '3') {
+                            modalInner.innerHTML = `
+                                <div class="category-modal-assets-container">
+                                </div>
+                            `;
 
-                                    const standardPriceOutput = `US$${(standardUS / 100).toFixed(2)}`;
-                                    const nitroPriceOutput = `US$${(nitroUS / 100).toFixed(2)}`;
+                            const assetsContainer = modalInner.querySelector('.category-modal-assets-container');
 
-                                    pricesDetailBlock.innerHTML = `
-                                        <div class="price-grid">
-                                            <div>
-                                                <h3 id="standardUS">${standardPriceOutput}</h3>
-                                            </div>
-                                            <div id="standardOrb">
-                                                <div class="orb-icon"></div>
-                                                <h3>${standardOrb}</h3>
-                                            </div>
-                                        </div>
-                                        <hr>
-                                        <div class="price-grid">
-                                            <div>
-                                                <div class="nitro-icon"></div>
-                                                <h3 id="nitroUS">${nitroPriceOutput}</h3>
-                                            </div>
-                                            <div id="nitroOrb">
-                                                <div class="orb-icon"></div>
-                                                <h3>${nitroOrb}</h3>
-                                            </div>
-                                        </div>
+                            const allAssets = {
+                                "Banner": categoryData.banner,
+                                "Banner Asset (Static)": categoryData.banner_asset?.static,
+                                "Banner Asset (Animated)": categoryData.banner_asset?.animated,
+                                "Logo": categoryData.logo,
+                                "Mobile Background": categoryData.mobile_bg,
+                                "Product Detail Page Background": categoryData.pdp_bg,
+                                "Success Modal Background": categoryData.success_modal_bg,
+                                "Mobile Banner": categoryData.mobile_banner,
+                                "Featured Block": categoryData.featured_block,
+                                "Hero Banner": categoryData.hero_banner,
+                                "Hero Banner Asset (Static)": categoryData.hero_banner_asset?.static,
+                                "Hero Banner Asset (Animated)": categoryData.hero_banner_asset?.animated,
+                                "Wide Banner": categoryData.wide_banner,
+                                "Hero Logo": categoryData.hero_logo,
+                                "Category Background": categoryData.category_bg
+                            };
+
+                            let nullAssets = true;
+
+                            Object.entries(allAssets).forEach(([asset, value]) => {
+                                if (!value) return; // skip null or undefined
+
+                                nullAssets = false;
+
+                                let assetDiv = document.createElement("div");
+
+                                assetDiv.classList.add('asset-div')
+
+                                if (value.includes(".webm")) {
+                                    assetDiv.innerHTML = `
+                                        <h2>${asset}</h2>
+                                        <video disablepictureinpicture autoplay muted loop src="${value}"></video> 
                                     `;
-
-                                    if (standardUS === 0) {
-                                        pricesDetailBlock.querySelector('#standardUS').classList.add('hidden');
-                                    }
-                                    if (nitroUS === 0) {
-                                        pricesDetailBlock.querySelector('#nitroUS').classList.add('hidden');
-                                    }
-
-                                    if (standardOrb === 0) {
-                                        cardTag.innerHTML = ``;
-                                        pricesDetailBlock.querySelector('#standardOrb').classList.add('hidden');
-                                    }
-                                    if (nitroOrb === 0) {
-                                        cardTag.innerHTML = ``;
-                                        pricesDetailBlock.querySelector('#nitroOrb').classList.add('hidden');
-                                    }
-
-                                    if (standardUS != 0 || nitroUS != 0) {
-                                        cardTag.innerHTML = ``;
-                                    }
+                                } else if (value.includes(".png") || value.includes(".jpg")) {
+                                    assetDiv.innerHTML = `
+                                        <h2>${asset}</h2>
+                                        <img src="${value}"></img> 
+                                    `;
+                                } else {
+                                    assetDiv.innerHTML = `
+                                        <h2>${asset}</h2>
+                                        <p class="asset_id has-tooltip" data-tooltip="Click To Copy" onclick="copyValue('${value}')">${value}</p>
+                                        <img src="https://cdn.discordapp.com/app-assets/1096190356233670716/${value}.png?size=4096"></img> 
+                                    `;
                                 }
 
+                                assetsContainer.appendChild(assetDiv);
+                            });
 
-                                const productsDetailBlock = modalInner.querySelector('#products-details-block');
+                            if (nullAssets) {
+                                assetsContainer.innerHTML = `
+                                    <div class="no-assets-container">
+                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M13.96 5.46002L18.54 10.04C18.633 10.1337 18.7436 10.2081 18.8655 10.2589C18.9873 10.3097 19.118 10.3358 19.25 10.3358C19.3821 10.3358 19.5128 10.3097 19.6346 10.2589C19.7565 10.2081 19.8671 10.1337 19.96 10.04L21.34 8.66002C21.7125 8.28529 21.9216 7.77839 21.9216 7.25002C21.9216 6.72164 21.7125 6.21474 21.34 5.84002L18.16 2.66002C17.7853 2.28751 17.2784 2.07843 16.75 2.07843C16.2217 2.07843 15.7148 2.28751 15.34 2.66002L13.96 4.04002C13.8663 4.13298 13.7919 4.24358 13.7412 4.36544C13.6904 4.4873 13.6642 4.618 13.6642 4.75002C13.6642 4.88203 13.6904 5.01273 13.7412 5.13459C13.7919 5.25645 13.8663 5.36705 13.96 5.46002ZM2.11005 20.16L2.84005 15.94C2.94422 15.3306 3.2341 14.7683 3.67005 14.33L11.54 6.46002C11.633 6.36629 11.7436 6.29189 11.8655 6.24112C11.9873 6.19036 12.118 6.16422 12.25 6.16422C12.3821 6.16422 12.5128 6.19036 12.6346 6.24112C12.7565 6.29189 12.8671 6.36629 12.96 6.46002L17.54 11.04C17.6338 11.133 17.7082 11.2436 17.7589 11.3654C17.8097 11.4873 17.8358 11.618 17.8358 11.75C17.8358 11.882 17.8097 12.0127 17.7589 12.1346C17.7082 12.2565 17.6338 12.3671 17.54 12.46L9.67005 20.33C9.2344 20.7641 8.67585 21.0539 8.07005 21.16L3.84005 21.89C3.60388 21.9301 3.36155 21.9131 3.13331 21.8403C2.90508 21.7676 2.69759 21.6412 2.52821 21.4719C2.35882 21.3025 2.23247 21.095 2.15972 20.8667C2.08697 20.6385 2.06993 20.3962 2.11005 20.16Z" fill="currentColor"/>
+                                            <path d="M5 1L5.81027 3.18973L8 4L5.81027 4.81027L5 7L4.18973 4.81027L2 4L4.18973 3.18973L5 1Z" fill="currentColor"/>
+                                            <path d="M14 19L14.5402 20.4598L16 21L14.5402 21.5402L14 23L13.4598 21.5402L12 21L13.4598 20.4598L14 19Z" fill="currentColor"/>
+                                        </svg>
+                                        <p>This category has no assets.</p>
+                                    </div>
+                                `;
+                            }
 
-                                if (productsDetailBlock) {
-                                    let total = 0;
-
-                                    let type0count = 0;
-                                    let type1count = 0;
-                                    let type2count = 0;
-                                    let type1000count = 0;
-                                    let type3000count = 0;
-                                    
-                                    categoryData.products.forEach(product => {
-                                        if (product.type === 0) {
-                                            total += 1;
-                                            type0count += 1;
-                                        } else if (product.type === 1) {
-                                            total += 1;
-                                            type1count += 1;
-                                        } else if (product.type === 2) {
-                                            total += 1;
-                                            type2count += 1;
-                                        } else if (product.type === 1000) {
-                                            total += 1;
-                                            type1000count += 1;
-                                        } else if (product.type === 3000) {
-                                            total += 1;
-                                            type3000count += 1;
-                                        } else if (product.type === 2000) {
-                                            product.variants.forEach(variant => {
-                                                total += 1;
-                                                if (variant.type === 0) {
-                                                    type0count += 1;
-                                                } else if (variant.type === 1) {
-                                                    type1count += 1;
-                                                }
-                                            });
-                                        }
-                                    });
-
-                                    let totalItems = document.createElement("h1");
-        
-                                    totalItems.textContent = '0';
-        
-                                    productsDetailBlock.appendChild(totalItems);
-
-                                    if (firstTimeOpeningModal) {
-                                        animateNumber(totalItems, total, 1500);
-                                    } else {
-                                        totalItems.textContent = total;
-                                    }
-
-                                    if (type0count) {
-                                        let itemCount = document.createElement("p");
-        
-                                        itemCount.textContent = 'Avatar Decorations: '+type0count;
-        
-                                        productsDetailBlock.appendChild(itemCount);
-                                    }
-                                    if (type1count) {
-                                        let itemCount = document.createElement("p");
-        
-                                        itemCount.textContent = 'Profile Effects: '+type1count;
-        
-                                        productsDetailBlock.appendChild(itemCount);
-                                    }
-                                    if (type2count) {
-                                        let itemCount = document.createElement("p");
-        
-                                        itemCount.textContent = 'Nameplates: '+type2count;
-        
-                                        productsDetailBlock.appendChild(itemCount);
-                                    }
-                                    if (type1000count) {
-                                        let itemCount = document.createElement("p");
-        
-                                        itemCount.textContent = 'Bundles: '+type1000count;
-        
-                                        productsDetailBlock.appendChild(itemCount);
-                                    }
-                                    if (type3000count) {
-                                        let itemCount = document.createElement("p");
-        
-                                        itemCount.textContent = 'External SKUs: '+type3000count;
-        
-                                        productsDetailBlock.appendChild(itemCount);
-                                    }
-                                }
-        
-                                const sku_id = modalInner.querySelector('.sku_id');
-        
-                                sku_id.addEventListener("click", function () {
-                                    sku_id.classList.add('clicked');
+                            document.querySelectorAll('.asset_id').forEach((el) => {
+                                el.addEventListener("click", function () {
+                                    el.classList.add('clicked');
                                     setTimeout(() => {
-                                        sku_id.classList.remove('clicked');
+                                        el.classList.remove('clicked');
                                     }, 500);
                                 });
-        
-                                if (categoryModalInfo.reviews_disabled != true) {
-                                    const reviewsTab = modal.querySelector('#category-modal-tab-4');
-                                    reviewsTab.classList.remove('disabled');
-                                    reviewsTab.classList.remove('has-tooltip');
-                                    reviewsTab.addEventListener("click", function () {
-                                        // Reviews
-                                        changeModalTab('4');
-                                    });
-                                      
-                                    let total = 0;
-                                      
-                                    categoryModalInfo.reviews.forEach(review => {
-                                        total += review.rating;
-                                    });
-                                      
-                                    const average = categoryModalInfo.reviews.length > 0 ? (total / categoryModalInfo.reviews.length).toFixed(1) : 'N/A';
+                            });
 
-                                    modalInner.querySelector('#average-rating').textContent = '0';
-
-                                    if (firstTimeOpeningModal && average != 'N/A') {
-                                        animateNumber(modalInner.querySelector('#average-rating'), average, 1500, {
-                                            useDecimals: true
-                                        });
-                                    } else {
-                                        modalInner.querySelector('#average-rating').textContent = average;
-                                    }
-                                      
-                                }
-        
-                            } else if (tab === '2') {
-                                modalInner.innerHTML = `
-                                    <div class="view-raw-modalv2-inner">
-                                        <textarea class="view-raw-modal-textbox" readonly>${JSON.stringify(categoryData, undefined, 4)}</textarea>
+                        } else if (tab === '4') {
+                            modalInner.innerHTML = `
+                                <div class="category-modal-reviews-container">
+                                </div>
+                                <div class="write-review-container" id="write-review-container">
+                                    <p class="write-review-disclaimer-error"></p>
+                                    <div class="write-review-input-container">
                                     </div>
-                                `;
-                            } else if (tab === '4') {
-                                modalInner.innerHTML = `
-                                    <div class="category-modal-reviews-container">
-                                    </div>
-                                    <div class="write-review-container" id="write-review-container">
-                                        <p class="write-review-disclaimer-error" id="write-review-error-output"></p>
-                                        <div class="write-review-input-container">
-                                            <div id="star-rating" class="stars">
-                                                <svg data-value="1" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
-                                                <svg data-value="2" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
-                                                <svg data-value="3" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
-                                                <svg data-value="4" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
-                                                <svg data-value="5" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
-                                            </div>
+                                </div>
+                            `;
 
-                                            <input autocomplete="off" id="write-review-post-input" placeholder="Write a review for Paper Beach...">
-                                            <svg class="review-send-icon" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M6.6 10.02 14 11.4a.6.6 0 0 1 0 1.18L6.6 14l-2.94 5.87a1.48 1.48 0 0 0 1.99 1.98l17.03-8.52a1.48 1.48 0 0 0 0-2.64L5.65 2.16a1.48 1.48 0 0 0-1.99 1.98l2.94 5.88Z" class=""></path></svg>
-                                        </div>
-                                    </div>
-                                `;
+                            const reviewInputContainer = modalInner.querySelector('.write-review-input-container');
 
+                            function refreshReviewBar() {
                                 if (currentUserData) {
-                                    if (currentUserData.ban_config.ban_type >= 1) {
-                                        modalInner.querySelector('.write-review-input-container').classList.add('banned');
-                                        modalInner.querySelector('.write-review-input-container').innerHTML = `
+
+                                    let hasReviewAlready;
+
+                                    categoryModalInfo.reviews.forEach(review => {
+                                        if (review.user.id === currentUserData.id) {
+                                            hasReviewAlready = true;
+                                        }
+                                    });
+
+                                    if (currentUserData.ban_config.ban_type >= 1 || settingsStore.staff_simulate_ban_type_1 === 1 || settingsStore.staff_simulate_ban_type_2 === 1 || currentUserData.username_violates_tos === true || settingsStore.staff_simulate_guidelines_block === 1) {
+
+                                        let banTitle = 'You have been suspended from submitting reviews.';
+                                        let banDisclaimer = `
+                                            <p>You have violated our</p>
+                                            <a class="link" href="https://yapper.shop/terms-of-service">Terms of Service</a>
+                                            <p>and can no longer submit reviews.</p>
+                                            <a class="link" href="https://yapper.shop/bans-and-suspensions">Learn More</a>
+                                        `;
+                                        let appealable = true;
+
+                                        if (currentUserData.ban_config.ban_type === 2 || settingsStore.staff_simulate_ban_type_2 === 1) {
+                                            banTitle = 'You have been permanently banned from submitting reviews.';
+                                            banDisclaimer = `
+                                                <p>You have violated our</p>
+                                                <a class="link" href="https://yapper.shop/terms-of-service">Terms of Service</a>
+                                                <p>and can no longer submit reviews. This ban cannot be appealed.</p>
+                                            `;
+                                            appealable = false;
+                                        }
+
+                                        if (currentUserData.username_violates_tos === true || settingsStore.staff_simulate_guidelines_block === 1) {
+                                            banTitle = 'You cannot submit reviews.';
+                                            banDisclaimer = `
+                                                <p>Your username violates our</p>
+                                                <a class="link" href="https://yapper.shop/terms-of-service">Community Guidelines,</a>
+                                                <p>all your reviews have been temporarily hidden from the public.</p>
+                                            `;
+                                            appealable = false;
+                                        }
+
+                                        reviewInputContainer.classList.add('banned');
+                                        reviewInputContainer.innerHTML = `
                                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                             <g clip-path="url(#clip0_66_360)">
                                             <path fill-rule="evenodd" clip-rule="evenodd" d="M18.0939 13.525C18.4939 12.825 19.5239 12.825 19.9139 13.525L23.8739 20.425C24.2539 21.085 23.7539 21.895 22.9639 21.895H15.0439C14.2539 21.895 13.7439 21.085 14.1339 20.415L18.0939 13.515V13.525ZM18.5539 15.395H19.4539C19.7539 15.395 19.9739 15.655 19.9539 15.945L19.7339 17.965C19.7239 18.125 19.5639 18.225 19.4039 18.195C19.1401 18.1391 18.8676 18.1391 18.6039 18.195C18.4439 18.225 18.2839 18.125 18.2739 17.965L18.0639 15.945C18.0569 15.8753 18.0646 15.8048 18.0866 15.7383C18.1085 15.6717 18.1443 15.6105 18.1914 15.5587C18.2386 15.5068 18.2961 15.4654 18.3603 15.4372C18.4244 15.409 18.4938 15.3946 18.5639 15.395H18.5539ZM19.0039 20.895C19.2691 20.895 19.5235 20.7896 19.711 20.6021C19.8985 20.4146 20.0039 20.1602 20.0039 19.895C20.0039 19.6298 19.8985 19.3754 19.711 19.1879C19.5235 19.0004 19.2691 18.895 19.0039 18.895C18.7387 18.895 18.4843 19.0004 18.2968 19.1879C18.1092 19.3754 18.0039 19.6298 18.0039 19.895C18.0039 20.1602 18.1092 20.4146 18.2968 20.6021C18.4843 20.7896 18.7387 20.895 19.0039 20.895Z" fill="currentColor"/>
@@ -1927,360 +2750,571 @@ async function loadSite() {
                                             </defs>
                                             </svg>
                                             <div class="text-container">
-                                                <h3>You have been permanently banned from submitting reviews.</h3>
-                                                <p>You have violated our review policy and can no longer submit reviews. This ban cannot be appealed.</p>
+                                                <h3>${banTitle}</h3>
+                                                <div class="desc-container">${banDisclaimer}</div>
+                                            </div>
+                                            <button class="log-in-with-discord-button ${appealable ? '' : 'hidden'}">
+                                                Appeal Suspension
+                                            </button>
+                                        `;
+                                    } else if (categoryModalInfo.reviews_disabled === true) {
+                                        reviewInputContainer.classList.add('normal');
+                                        reviewInputContainer.innerHTML = `
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <g clip-path="url(#clip0_66_360)">
+                                            <path fill-rule="evenodd" clip-rule="evenodd" d="M18.0939 13.525C18.4939 12.825 19.5239 12.825 19.9139 13.525L23.8739 20.425C24.2539 21.085 23.7539 21.895 22.9639 21.895H15.0439C14.2539 21.895 13.7439 21.085 14.1339 20.415L18.0939 13.515V13.525ZM18.5539 15.395H19.4539C19.7539 15.395 19.9739 15.655 19.9539 15.945L19.7339 17.965C19.7239 18.125 19.5639 18.225 19.4039 18.195C19.1401 18.1391 18.8676 18.1391 18.6039 18.195C18.4439 18.225 18.2839 18.125 18.2739 17.965L18.0639 15.945C18.0569 15.8753 18.0646 15.8048 18.0866 15.7383C18.1085 15.6717 18.1443 15.6105 18.1914 15.5587C18.2386 15.5068 18.2961 15.4654 18.3603 15.4372C18.4244 15.409 18.4938 15.3946 18.5639 15.395H18.5539ZM19.0039 20.895C19.2691 20.895 19.5235 20.7896 19.711 20.6021C19.8985 20.4146 20.0039 20.1602 20.0039 19.895C20.0039 19.6298 19.8985 19.3754 19.711 19.1879C19.5235 19.0004 19.2691 18.895 19.0039 18.895C18.7387 18.895 18.4843 19.0004 18.2968 19.1879C18.1092 19.3754 18.0039 19.6298 18.0039 19.895C18.0039 20.1602 18.1092 20.4146 18.2968 20.6021C18.4843 20.7896 18.7387 20.895 19.0039 20.895Z" fill="currentColor"/>
+                                            <path d="M10.4238 2.12421C12.6154 1.77616 14.8606 2.1665 16.8057 3.23456C18.7507 4.30263 20.2856 5.98766 21.168 8.02362C22.0095 9.96556 22.2098 12.1215 21.749 14.1818L20.2764 11.7082C19.7305 10.764 18.2893 10.7639 17.7295 11.7082V11.6945L12.1875 21.0031C11.9898 21.3304 11.9593 21.6822 12.0508 21.9982C12.0339 21.9983 12.0169 22.0002 12 22.0002H2.2002C2.00802 21.9999 1.8196 21.9444 1.6582 21.84C1.49684 21.7357 1.36915 21.5864 1.29004 21.4113C1.21109 21.2364 1.18366 21.0425 1.21191 20.8527C1.2403 20.6627 1.32336 20.4844 1.4502 20.34L3.50977 17.9699C3.65977 17.7999 3.6798 17.5496 3.5498 17.3596C2.3606 15.4863 1.82794 13.2708 2.03613 11.0617C2.24434 8.85254 3.18182 6.77552 4.7002 5.15741C6.21866 3.53928 8.23227 2.47226 10.4238 2.12421Z" fill="currentColor"/>
+                                            </g>
+                                            <defs>
+                                            <clipPath id="clip0_66_360">
+                                            <rect width="24" height="24" fill="white"/>
+                                            </clipPath>
+                                            </defs>
+                                            </svg>
+                                            <div class="text-container">
+                                                <h3>Reviews disabled.</h3>
+                                                <p>You cannot review this category.</p>
                                             </div>
                                         `;
+                                    } else if (hasReviewAlready) {
+                                        reviewInputContainer.innerHTML = `
+                                            <div id="star-rating" class="stars">
+                                                <svg class="has-tooltip" data-tooltip="1 Star" data-value="1" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="2 Stars" data-value="2" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="3 Stars" data-value="3" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="4 Stars" data-value="4" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="5 Stars" data-value="5" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                            </div>
+
+                                            <input autocomplete="off" id="write-review-post-input" placeholder="Edit review for ${categoryData.name}...">
+                                            <p class="write-review-text-limit">100</p>
+                                            <svg class="review-send-icon has-tooltip" data-tooltip="Submit Review" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M6.6 10.02 14 11.4a.6.6 0 0 1 0 1.18L6.6 14l-2.94 5.87a1.48 1.48 0 0 0 1.99 1.98l17.03-8.52a1.48 1.48 0 0 0 0-2.64L5.65 2.16a1.48 1.48 0 0 0-1.99 1.98l2.94 5.88Z" class=""></path></svg>
+                                        `;
+                                    } else {
+                                        reviewInputContainer.innerHTML = `
+                                            <div id="star-rating" class="stars">
+                                                <svg class="has-tooltip" data-tooltip="1 Star" data-value="1" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="2 Stars" data-value="2" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="3 Stars" data-value="3" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="4 Stars" data-value="4" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                                <svg class="has-tooltip" data-tooltip="5 Stars" data-value="5" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g clip-path="url(#clip0_131_2)"><path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="currentColor"></path></g><defs><clipPath id="clip0_131_2"><rect width="24" height="24" fill="currentColor"></rect></clipPath></defs></svg>
+                                            </div>
+
+                                            <input autocomplete="off" id="write-review-post-input" placeholder="Write a review for ${categoryData.name}...">
+                                            <p class="write-review-text-limit">100</p>
+                                            <svg class="review-send-icon has-tooltip" data-tooltip="Submit Review" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M6.6 10.02 14 11.4a.6.6 0 0 1 0 1.18L6.6 14l-2.94 5.87a1.48 1.48 0 0 0 1.99 1.98l17.03-8.52a1.48 1.48 0 0 0 0-2.64L5.65 2.16a1.48 1.48 0 0 0-1.99 1.98l2.94 5.88Z" class=""></path></svg>
+                                        `;
                                     }
+
+                                                                        
+                                
+                                    const reviewInput = modalInner.querySelector('#write-review-post-input');
+                                    const reviewSendIcon = modalInner.querySelector('.review-send-icon');
+                                    const errorOutput = modalInner.querySelector('.write-review-disclaimer-error');
+
+
+
+                                    const input = reviewInput;
+                                    const counter = modalInner.querySelector('.write-review-text-limit');
+                                    let maxLength = 100;
+
+                                    if (counter) {
+                                        if (currentUserData.user_features.includes("LONGER_REVIEWS")) {
+                                            maxLength = 200;
+                                            counter.classList.add('has-tooltip');
+                                            counter.setAttribute('data-tooltip', 'Your review length limit is doubled');
+                                        }
+
+                                        function updateCounter() {
+                                            const currentLength = input.value.length;
+                                            const remaining = maxLength - currentLength;
+
+                                            counter.textContent = remaining;
+
+                                            // Remove all classes first
+                                            counter.classList.remove('warning', 'danger');
+                                            input.classList.remove('limit-reached');
+
+                                            // Add appropriate styling based on remaining characters
+                                            if (remaining <= 0) {
+                                                counter.classList.add('danger');
+                                                input.classList.add('limit-reached');
+                                            } else if (remaining <= 20) {
+                                                counter.classList.add('warning');
+                                            }
+                                        }
+
+                                        // Update counter on input
+                                        input.addEventListener('input', updateCounter);
+
+                                        // Prevent typing when limit is reached
+                                        input.addEventListener('keydown', function(e) {
+                                            const currentLength = input.value.length;
+
+                                            // Allow backspace, delete, tab, escape, enter, and arrow keys
+                                            if ([8, 9, 27, 13, 46, 37, 38, 39, 40].includes(e.keyCode) ||
+                                                // Allow Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+Z
+                                                (e.ctrlKey && [65, 67, 86, 88, 90].includes(e.keyCode))) {
+                                                return;
+                                            }
+
+                                            // Prevent typing if at max length
+                                            if (currentLength >= maxLength) {
+                                                e.preventDefault();
+                                            }
+                                        });
+
+                                        updateCounter();
+                                    }
+
+
+
+                                    if (reviewSendIcon) {
+                                        reviewSendIcon.addEventListener("click", function () {
+                                            reviewPostHandle();
+                                        });
+                                    }
+
+                                    const stars = modalInner.querySelectorAll('#star-rating svg');
+                                    let selectedRating = 0;
+
+                                    stars.forEach(star => {
+                                        star.addEventListener('click', () => {
+                                            selectedRating = parseInt(star.getAttribute('data-value'));
+                                            stars.forEach(star => {
+                                                const value = parseInt(star.getAttribute('data-value'));
+                                                star.classList.toggle('filled', value <= selectedRating);
+                                            });
+                                        });
+                                    });
+
+                                    async function reviewPostHandle() {
+                                        errorOutput.textContent = '';
+                                        const domainRegex = /\b[a-zA-Z0-9-]+\.[a-zA-Z]{2,}\b/;
+
+                                        if (reviewInput.value.trim().length === 0) {
+                                            errorOutput.textContent = 'Reviews cannot be blank';
+                                        } else if (selectedRating === 0) {
+                                            errorOutput.textContent = 'Rating must be 1-5 stars';
+                                        } else if (domainRegex.test(reviewInput.value)) {
+                                            errorOutput.textContent = 'Reviews cannot contain Links or Domains';
+                                        } else {
+                                            const status = await postReview(categoryData.sku_id, selectedRating, reviewInput.value);
+
+                                            if (status.error && status.message) {
+                                                errorOutput.textContent = `${status.error}, ${status.message}`;
+                                            } else {
+                                                await fetchCategoryData();
+                                                fetchAndRenderReviews();
+                                                refreshReviewBar();
+                                            }
+                                        }
+                                    }
+
                                 } else {
-                                    modalInner.querySelector('.write-review-input-container').classList.add('log-in');
-                                    modalInner.querySelector('.write-review-input-container').innerHTML = `
+                                    reviewInputContainer.classList.add('normal');
+                                    reviewInputContainer.innerHTML = `
                                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M11.9999 22C14.2189 21.9983 16.3744 21.2585 18.1268 19.8972C19.8792 18.5359 21.129 16.6304 21.6795 14.4807C22.23 12.3311 22.0498 10.0594 21.1674 8.02335C20.285 5.98732 18.7504 4.30264 16.8053 3.23457C14.8602 2.16651 12.6151 1.77574 10.4236 2.12379C8.23202 2.47185 6.21848 3.53896 4.70001 5.15709C3.18155 6.77522 2.24443 8.85245 2.03621 11.0617C1.82799 13.2709 2.36051 15.4867 3.54991 17.36C3.67991 17.55 3.65991 17.8 3.50991 17.97L1.44991 20.34C1.32307 20.4844 1.24052 20.6623 1.21214 20.8523C1.18376 21.0424 1.21074 21.2366 1.28987 21.4117C1.36899 21.5869 1.49691 21.7355 1.6583 21.8398C1.81969 21.9442 2.00773 21.9998 2.19991 22H11.9999Z" fill="currentColor"/>
                                         </svg>
                                         <div class="text-container">
                                             <h3>Log In with Discord to submit reviews.</h3>
                                         </div>
+                                        <button class="log-in-with-discord-button" onclick="loginWithDiscord();">
+                                            <svg width="59" height="59" viewBox="0 0 59 59" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M48.7541 12.511C45.2046 10.8416 41.4614 9.66246 37.6149 9C37.0857 9.96719 36.6081 10.9609 36.1822 11.9811C32.0905 11.3451 27.9213 11.3451 23.8167 11.9811C23.3908 10.9609 22.9132 9.96719 22.384 9C18.5376 9.67571 14.7815 10.8549 11.2319 12.5243C4.18435 23.2297 2.27404 33.67 3.2292 43.9647C7.35961 47.0915 11.9805 49.4763 16.8854 51C17.9954 49.4763 18.9764 47.8467 19.8154 46.1508C18.2149 45.5413 16.6789 44.7861 15.2074 43.8984C15.5946 43.6069 15.969 43.3155 16.3433 43.024C24.9913 47.1975 35.0076 47.1975 43.6557 43.024C44.03 43.3287 44.4043 43.6334 44.7915 43.8984C43.3201 44.7861 41.7712 45.5413 40.1706 46.164C41.0096 47.8599 41.9906 49.4763 43.1006 51C48.0184 49.4763 52.6393 47.1047 56.7697 43.9647C57.8927 32.0271 54.8594 21.6927 48.7412 12.511H48.7541ZM21.0416 37.6315C18.3827 37.6315 16.1755 35.1539 16.1755 32.1066C16.1755 29.0593 18.2923 26.5552 21.0287 26.5552C23.7651 26.5552 25.9465 29.0593 25.8949 32.1066C25.8432 35.1539 23.7522 37.6315 21.0416 37.6315ZM38.9831 37.6315C36.3113 37.6315 34.1299 35.1539 34.1299 32.1066C34.1299 29.0593 36.2467 26.5552 38.9831 26.5552C41.7195 26.5552 43.888 29.0593 43.8364 32.1066C43.7847 35.1539 41.6937 37.6315 38.9831 37.6315Z" fill="white"/>
+                                            </svg>
+                                            Log In with Discord
+                                        </button>
                                     `;
                                 }
+                            }
 
-                                const reviewsContainer = modalInner.querySelector('.category-modal-reviews-container');
+                            refreshReviewBar();
 
-                                async function fetchAndRenderReviews() {
-                                    reviewsContainer.innerHTML = ``;
-                                    if (Array.isArray(categoryModalInfo.reviews) && categoryModalInfo.reviews.length != 0) {
-                                        categoryModalInfo.reviews.forEach(review => {
-                                            let reviewDiv = document.createElement("div");
+                            const reviewsContainer = modalInner.querySelector('.category-modal-reviews-container');
 
-                                            // reviewDiv.addEventListener("click", async function () {
-                                            //     await fetchCategoryData();
-                                            //     fetchAndRenderReviews();
-                                            // });
-                
-                                            reviewDiv.classList.add('category-modal-review-container');
-                                            if (review.types.system != 0) {
-                                                const type = reviews_system_types.find(type => type.id === review.types.system).codename;
-                                                reviewDiv.style.backgroundColor = `var(--bg-feedback-${type})`;
-                                                reviewDiv.classList.add(`bg-feedback-${type}`);
-                                            }
-                                            reviewDiv.innerHTML = `
-                                                <div class="review-nameplate-container"></div>
-                                                <div class="review-user-container">
-                                                    <div class="review-avatar-container">
-                                                        <img class="review-avatar" src="https://cdn.yapper.shop/assets/31.png" onerror="this.parentElement.remove();">
-                                                        <img class="review-avatar-decoration" src="https://cdn.yapper.shop/assets/31.png">
-                                                    </div>
-
-                                                    <div class="review-user-display-name-container">
-                                                        <p class="inv"></p>
-                                                        <p class="review-user-display-name"></p>
-                                                    </div>
-
-                                                    <div class="review-system-tag-container has-tooltip" data-tooltip="Official Shop Archives Message">
-                                                        <p class="inv">SYSTEM</p>
-                                                        <p class="review-system-tag">SYSTEM</p>
-                                                    </div>
-
-                                                    <div class="review-server-tag-container-container">
-                                                        <div class="review-server-tag-container">
-                                                            <img class="server-tag-img" src="https://cdn.yapper.shop/assets/31.png">
-                                                            <div class="server-tag-title-container">
-                                                                <p class="server-tag-title"></p>
-                                                                <p class="inv"></p>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="review-badges-container-container">
-                                                        <div class="review-badges-container">
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="review-rating-container">
-                                                        <div class="possible-stars">
-                                                    
-                                                        </div>
-                                                        <div class="star-rating">
-                                                            
-                                                        </div>
-                                                    </div>
-
-                                                </div>
-                                                <p class="review-text-content"></p>
-                                            `;
-    
-                                            if (review.user.avatar) {
-    
-                                                const avatarPreview = reviewDiv.querySelector('.review-avatar');
-    
-                                                avatarPreview.src = userAvatar = 'https://cdn.discordapp.com/avatars/'+review.user.id+'/'+review.user.avatar+'.webp?size=128';
-    
-                                                if (review.user.avatar.includes('a_')) {
-                                                    reviewDiv.addEventListener("mouseenter", () => {
-                                                        avatarPreview.src = userAvatar = 'https://cdn.discordapp.com/avatars/'+review.user.id+'/'+review.user.avatar+'.gif?size=128';
-                                                    });
-                                                    reviewDiv.addEventListener("mouseleave", () => {
-                                                        avatarPreview.src = userAvatar = 'https://cdn.discordapp.com/avatars/'+review.user.id+'/'+review.user.avatar+'.webp?size=128';
-                                                    });
-                                                }
-    
-                                            }
-
-                                            if (!review.user.types.system) {
-                                                reviewDiv.querySelector('.review-system-tag-container').remove();
-                                            }
-    
-                                            if (review.user.avatar_decoration_data?.asset) {
-    
-                                                const decoPreview = reviewDiv.querySelector('.review-avatar-decoration');
-    
-                                                decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${review.user.avatar_decoration_data.asset}.png?size=4096&passthrough=false`;
-    
-                                                reviewDiv.addEventListener("mouseenter", () => {
-                                                    decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${review.user.avatar_decoration_data.asset}.png?size=4096&passthrough=true`;
-                                                });
-                                                reviewDiv.addEventListener("mouseleave", () => {
-                                                    decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${review.user.avatar_decoration_data.asset}.png?size=4096&passthrough=false`;
-                                                });
-    
-                                            }
-    
-                                            const serverTagAsset = reviewDiv.querySelector('.review-server-tag-container-container');
-    
-                                            if (review.user.primary_guild) {
-    
-                                                serverTagAsset.querySelector('.server-tag-img').src = `https://cdn.discordapp.com/clan-badges/${review.user.primary_guild.identity_guild_id}/${review.user.primary_guild.badge}.png?size=24`;
-    
-                                                serverTagAsset.querySelector('.server-tag-title').textContent = review.user.primary_guild.tag;
-                                                serverTagAsset.querySelector('.inv').textContent = review.user.primary_guild.tag;
-    
-                                            } else {
-                                                serverTagAsset.remove();
-                                            }
-    
-                                            const userBadgesElement = reviewDiv.querySelector('.review-badges-container-container');
-                                            const userBadgesInnerElement = reviewDiv.querySelector('.review-badges-container');
-    
-                                            if (Array.isArray(review.user.badges)) {
-                                                review.user.badges.forEach(badge => {
-                                                    const badgeImg = document.createElement("img");
-                                                    badgeImg.src = badge.src;
-                                                    badgeImg.alt = badge.name;
-                                                    badgeImg.setAttribute('data-tooltip', badge.name);
-                                                    badgeImg.classList.add("badge");
-                                                    badgeImg.classList.add("has-tooltip");
-                                                    
-                                                    if (badge.support) {
-                                                        const badgeLink = document.createElement("a");
-                                                        badgeLink.href = badge.support;
-                                                        badgeLink.target = "_blank";
-                                                        badgeLink.rel = "noopener noreferrer";
-                                                        badgeLink.appendChild(badgeImg);
-                                                        userBadgesInnerElement.appendChild(badgeLink);
-                                                    } else {
-                                                        userBadgesInnerElement.appendChild(badgeImg);
-                                                    }
-                                                });
-                                            } else {
-                                                userBadgesElement.remove();
-                                            }
-    
-    
-                                            if (review.user.collectibles?.nameplate) {
-                                                if (review.user.collectibles.nameplate.sa_override_src) {
-                                                    let nameplatePreview = document.createElement("img");
-                                                    
-                                                    nameplatePreview.src = review.user.collectibles.nameplate.sa_override_src;
-    
-                                                    reviewDiv.querySelector('.review-nameplate-container').appendChild(nameplatePreview);
-                                                } else {
-                                                    let nameplatePreview = document.createElement("video");
-                                                    
-                                                    nameplatePreview.src = `https://cdn.discordapp.com/assets/collectibles/${review.user.collectibles.nameplate.asset}asset.webm`;
-                                                    nameplatePreview.disablePictureInPicture = true;
-                                                    nameplatePreview.muted = true;
-                                                    nameplatePreview.loop = true;
-                                                    nameplatePreview.playsInline = true;
-    
-                                                    reviewDiv.addEventListener("mouseenter", () => {
-                                                        nameplatePreview.play();
-                                                    });
-                                                    reviewDiv.addEventListener("mouseleave", () => {
-                                                        nameplatePreview.pause();
-                                                    });
-
-                                                    const bgcolor = nameplate_palettes[review.user.collectibles.nameplate.palette].darkBackground;
-    
-                                                    reviewDiv.querySelector('.review-nameplate-container').style.backgroundImage = `linear-gradient(90deg, #00000000 0%, ${bgcolor} 200%)`;
-    
-                                                    reviewDiv.querySelector('.review-nameplate-container').appendChild(nameplatePreview);
-                                                }
-                                            }
-    
-                                            if (review.rating != null) {
-                                                for (let i = 0; i < 5; i++) {
-                                                    let starRate = document.createElement("div");
-        
-                                                    starRate.innerHTML = `
-                                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                            <g clip-path="url(#clip0_58_258)">
-                                                            <path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="#575757"></path>
-                                                            </g>
-                                                            <defs>
-                                                            <clipPath id="clip0_58_258">
-                                                            <rect width="24" height="24" fill="white"></rect>
-                                                            </clipPath>
-                                                            </defs>
-                                                        </svg>
-                                                    `;
-        
-                                                    reviewDiv.querySelector('.possible-stars').appendChild(starRate);
-                                                }
-        
-                                                for (let i = 0; i < review.rating; i++) {
-                                                    let starRate = document.createElement("div");
-        
-                                                    starRate.innerHTML = `
-                                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                            <g clip-path="url(#clip0_58_258)">
-                                                            <path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="#FFEC3E"></path>
-                                                            </g>
-                                                            <defs>
-                                                            <clipPath id="clip0_58_258">
-                                                            <rect width="24" height="24" fill="white"></rect>
-                                                            </clipPath>
-                                                            </defs>
-                                                        </svg>
-                                                    `;
-        
-                                                    reviewDiv.querySelector('.star-rating').appendChild(starRate);
-                                                }
-                                            }
-    
-                                            reviewDiv.querySelector('.inv').textContent = review.user.global_name ? review.user.global_name : review.user.username;
-                                            reviewDiv.querySelector('.review-user-display-name').textContent = review.user.global_name ? review.user.global_name : review.user.username;
-                                            reviewDiv.querySelector('.review-text-content').textContent = review.text;
-                
-                                            reviewsContainer.appendChild(reviewDiv);
-                                        });
-                                    } else {
+                            async function fetchAndRenderReviews() {
+                                reviewsContainer.innerHTML = ``;
+                                if (Array.isArray(categoryModalInfo.reviews) && categoryModalInfo.reviews.length != 0) {
+                                    categoryModalInfo.reviews.forEach(review => {
                                         let reviewDiv = document.createElement("div");
                 
                                         reviewDiv.classList.add('category-modal-review-container');
-                                        reviewDiv.style.backgroundColor = 'var(--bg-feedback-info)';
+                                        if (review.types.system != 0) {
+                                            const type = reviews_system_types.find(type => type.id === review.types.system).codename;
+                                            reviewDiv.style.backgroundColor = `var(--bg-feedback-${type})`;
+                                            reviewDiv.classList.add(`bg-feedback-${type}`);
+                                        }
                                         reviewDiv.innerHTML = `
-                                            <p class="review-text-content">This category currently has no reviews.</p>
+                                            <div class="shop-modal-review-moderation-buttons" data-modal-top-product-buttons></div>
+                                            <div class="review-nameplate-container"></div>
+                                            <div class="review-user-container">
+                                                <div class="review-avatar-container">
+                                                    <img class="review-avatar" src="https://cdn.yapper.shop/assets/31.png" onerror="this.parentElement.remove();">
+                                                    <img class="review-avatar-decoration" src="https://cdn.yapper.shop/assets/31.png">
+                                                </div>
+
+                                                <div class="review-user-display-name-container">
+                                                    <p class="inv"></p>
+                                                    <p class="review-user-display-name"></p>
+                                                </div>
+
+                                                <div class="review-system-tag-container has-tooltip" data-tooltip="Official Shop Archives Message">
+                                                    <p class="inv">SYSTEM</p>
+                                                    <p class="review-system-tag">SYSTEM</p>
+                                                </div>
+
+                                                <div class="review-server-tag-container-container">
+                                                    <div class="review-server-tag-container">
+                                                        <img class="server-tag-img" src="https://cdn.yapper.shop/assets/31.png">
+                                                        <div class="server-tag-title-container">
+                                                            <p class="server-tag-title"></p>
+                                                            <p class="inv"></p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="review-badges-container-container">
+                                                    <div class="review-badges-container">
+                                                    </div>
+                                                </div>
+
+                                                <div class="review-rating-container">
+                                                    <div class="possible-stars">
+                                                
+                                                    </div>
+                                                    <div class="star-rating">
+                                                        
+                                                    </div>
+                                                </div>
+
+                                                <div class="review-date-container">
+                                                    <p class="inv">today</p>
+                                                    <p class="review-date">today</p>
+                                                </div>
+
+                                            </div>
+                                            <p class="review-text-content"></p>
                                         `;
 
-                                        if (currentUserData && currentUserData.ban_config.ban_type === 0) {
-                                            reviewDiv.querySelector('.review-text-content').textContent = 'This category currently has no reviews. You could be the first!';
-                                        } else if (currentUserData && currentUserData.ban_config.ban_type >= 1) {
+                                        const date = new Date(review.created_at);
+
+                                        const day = String(date.getDate()).padStart(2, '0');
+                                        const month = String(date.getMonth() + 1).padStart(2, '0'); // getMonth is 0-indexed
+                                        const year = date.getFullYear();
+
+                                        const dateContainer = reviewDiv.querySelector(".review-date-container");
+
+                                        if (settingsStore.non_us_timezone === 1) {
+                                            const formatted = `${day}/${month}/${year}`;
+
+                                            dateContainer.querySelector('.review-date').textContent = `${formatted}`;
+                                            dateContainer.querySelector('.inv').textContent = `${formatted}`;
                                         } else {
-                                            reviewDiv.querySelector('.review-text-content').textContent = 'This category currently has no reviews. Log In with Discord and you could be the first!';
+                                            const formatted = `${month}/${day}/${year}`;
+                                            
+                                            dateContainer.querySelector('.review-date').textContent = `${formatted}`;
+                                            dateContainer.querySelector('.inv').textContent = `${formatted}`;
                                         }
 
+                                        if (currentUserData?.id === review.user.id || currentUserData?.types.admin_level >= 1) {
+                                            let deleteReviewIcon = document.createElement("div");
+
+                                            deleteReviewIcon.innerHTML = `
+                                                <svg class="modalv2_top_icon has-tooltip" data-tooltip="Delete Review" style="color: var(--color-red);" aria-hidden="true" role="img" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24"><path fill="currentColor" d="M14.25 1c.41 0 .75.34.75.75V3h5.25c.41 0 .75.34.75.75v.5c0 .41-.34.75-.75.75H3.75A.75.75 0 0 1 3 4.25v-.5c0-.41.34-.75.75-.75H9V1.75c0-.41.34-.75.75-.75h4.5Z" class=""></path><path fill="currentColor" fill-rule="evenodd" d="M5.06 7a1 1 0 0 0-1 1.06l.76 12.13a3 3 0 0 0 3 2.81h8.36a3 3 0 0 0 3-2.81l.75-12.13a1 1 0 0 0-1-1.06H5.07ZM11 12a1 1 0 1 0-2 0v6a1 1 0 1 0 2 0v-6Zm3-1a1 1 0 0 1 1 1v6a1 1 0 1 1-2 0v-6a1 1 0 0 1 1-1Z" clip-rule="evenodd" class=""></path></svg>
+                                            `;
+
+                                            deleteReviewIcon.addEventListener("click", function () {
+                                                reviewDeleteHandle();
+                                            });
+
+                                            async function reviewDeleteHandle() {
+                                                const status = await deleteReviewById(review.id);
+
+                                                if (status.error && status.message) {
+                                                } else {
+                                                    await fetchCategoryData();
+                                                    fetchAndRenderReviews();
+                                                    refreshReviewBar();
+                                                }
+                                            }
+
+                                            reviewDiv.querySelector(".shop-modal-review-moderation-buttons").appendChild(deleteReviewIcon);
+                                        }
+    
+                                        if (review.user.avatar) {
+    
+                                            const avatarPreview = reviewDiv.querySelector('.review-avatar');
+    
+                                            avatarPreview.src = userAvatar = 'https://cdn.discordapp.com/avatars/'+review.user.id+'/'+review.user.avatar+'.webp?size=128';
+    
+                                            if (review.user.avatar.includes('a_')) {
+                                                reviewDiv.addEventListener("mouseenter", () => {
+                                                    avatarPreview.src = userAvatar = 'https://cdn.discordapp.com/avatars/'+review.user.id+'/'+review.user.avatar+'.gif?size=128';
+                                                });
+                                                reviewDiv.addEventListener("mouseleave", () => {
+                                                    avatarPreview.src = userAvatar = 'https://cdn.discordapp.com/avatars/'+review.user.id+'/'+review.user.avatar+'.webp?size=128';
+                                                });
+                                            }
+    
+                                        }
+
+                                        if (!review.user.types.system) {
+                                            reviewDiv.querySelector('.review-system-tag-container').remove();
+                                        }
+    
+                                        if (review.user.avatar_decoration_data?.asset) {
+    
+                                            const decoPreview = reviewDiv.querySelector('.review-avatar-decoration');
+    
+                                            decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${review.user.avatar_decoration_data.asset}.png?size=4096&passthrough=false`;
+    
+                                            reviewDiv.addEventListener("mouseenter", () => {
+                                                decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${review.user.avatar_decoration_data.asset}.png?size=4096&passthrough=true`;
+                                            });
+                                            reviewDiv.addEventListener("mouseleave", () => {
+                                                decoPreview.src = `https://cdn.discordapp.com/avatar-decoration-presets/${review.user.avatar_decoration_data.asset}.png?size=4096&passthrough=false`;
+                                            });
+    
+                                        }
+    
+                                        const serverTagAsset = reviewDiv.querySelector('.review-server-tag-container-container');
+    
+                                        if (review.user.primary_guild) {
+    
+                                            serverTagAsset.querySelector('.server-tag-img').src = `https://cdn.discordapp.com/clan-badges/${review.user.primary_guild.identity_guild_id}/${review.user.primary_guild.badge}.png?size=24`;
+    
+                                            serverTagAsset.querySelector('.server-tag-title').textContent = review.user.primary_guild.tag;
+                                            serverTagAsset.querySelector('.inv').textContent = review.user.primary_guild.tag;
+    
+                                        } else {
+                                            serverTagAsset.remove();
+                                        }
+    
+                                        const userBadgesElement = reviewDiv.querySelector('.review-badges-container-container');
+                                        const userBadgesInnerElement = reviewDiv.querySelector('.review-badges-container');
+    
+                                        if (Array.isArray(review.user.badges)) {
+                                            review.user.badges.forEach(badge => {
+                                                const badgeImg = document.createElement("img");
+                                                badgeImg.src = badge.src;
+                                                badgeImg.alt = badge.name;
+                                                badgeImg.setAttribute('data-tooltip', badge.name);
+                                                badgeImg.classList.add("badge");
+                                                badgeImg.classList.add("has-tooltip");
+                                                
+                                                if (badge.support) {
+                                                    const badgeLink = document.createElement("a");
+                                                    badgeLink.href = badge.support;
+                                                    badgeLink.target = "_blank";
+                                                    badgeLink.rel = "noopener noreferrer";
+                                                    badgeLink.appendChild(badgeImg);
+                                                    userBadgesInnerElement.appendChild(badgeLink);
+                                                } else {
+                                                    userBadgesInnerElement.appendChild(badgeImg);
+                                                }
+                                            });
+                                        } else {
+                                            userBadgesElement.remove();
+                                        }
+    
+    
+                                        if (review.user.collectibles?.nameplate) {
+                                            if (review.user.collectibles.nameplate.sa_override_src) {
+                                                let nameplatePreview = document.createElement("img");
+                                                
+                                                nameplatePreview.src = review.user.collectibles.nameplate.sa_override_src;
+    
+                                                reviewDiv.querySelector('.review-nameplate-container').appendChild(nameplatePreview);
+                                            } else {
+                                                let nameplatePreview = document.createElement("video");
+                                                
+                                                nameplatePreview.src = `https://cdn.discordapp.com/assets/collectibles/${review.user.collectibles.nameplate.asset}asset.webm`;
+                                                nameplatePreview.disablePictureInPicture = true;
+                                                nameplatePreview.muted = true;
+                                                nameplatePreview.loop = true;
+                                                nameplatePreview.playsInline = true;
+    
+                                                reviewDiv.addEventListener("mouseenter", () => {
+                                                    nameplatePreview.play();
+                                                });
+                                                reviewDiv.addEventListener("mouseleave", () => {
+                                                    nameplatePreview.pause();
+                                                });
+
+                                                const bgcolor = nameplate_palettes[review.user.collectibles.nameplate.palette].darkBackground;
+    
+                                                reviewDiv.querySelector('.review-nameplate-container').style.backgroundImage = `linear-gradient(90deg, #00000000 0%, ${bgcolor} 200%)`;
+    
+                                                reviewDiv.querySelector('.review-nameplate-container').appendChild(nameplatePreview);
+                                            }
+                                        }
+    
+                                        if (review.rating != null) {
+                                            for (let i = 0; i < 5; i++) {
+                                                let starRate = document.createElement("div");
+        
+                                                starRate.innerHTML = `
+                                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <g clip-path="url(#clip0_58_258)">
+                                                        <path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="#575757"></path>
+                                                        </g>
+                                                        <defs>
+                                                        <clipPath id="clip0_58_258">
+                                                        <rect width="24" height="24" fill="white"></rect>
+                                                        </clipPath>
+                                                        </defs>
+                                                    </svg>
+                                                `;
+        
+                                                reviewDiv.querySelector('.possible-stars').appendChild(starRate);
+                                            }
+        
+                                            for (let i = 0; i < review.rating; i++) {
+                                                let starRate = document.createElement("div");
+        
+                                                starRate.innerHTML = `
+                                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <g clip-path="url(#clip0_58_258)">
+                                                        <path d="M12 1L14.6942 9.2918H23.4127L16.3593 14.4164L19.0534 22.7082L12 17.5836L4.94658 22.7082L7.64074 14.4164L0.587322 9.2918H9.30583L12 1Z" fill="#FFEC3E"></path>
+                                                        </g>
+                                                        <defs>
+                                                        <clipPath id="clip0_58_258">
+                                                        <rect width="24" height="24" fill="white"></rect>
+                                                        </clipPath>
+                                                        </defs>
+                                                    </svg>
+                                                `;
+        
+                                                reviewDiv.querySelector('.star-rating').appendChild(starRate);
+                                            }
+                                        }
+    
+                                        reviewDiv.querySelector('.inv').textContent = review.user.global_name ? review.user.global_name : review.user.username;
+                                        reviewDiv.querySelector('.review-user-display-name').textContent = review.user.global_name ? review.user.global_name : review.user.username;
+                                        reviewDiv.querySelector('.review-text-content').textContent = review.text;
                 
                                         reviewsContainer.appendChild(reviewDiv);
+                                    });
+                                } else {
+                                    let reviewDiv = document.createElement("div");
+                
+                                    reviewDiv.classList.add('category-modal-review-container');
+                                    reviewDiv.style.backgroundColor = 'var(--bg-feedback-info)';
+                                    reviewDiv.innerHTML = `
+                                        <p class="review-text-content">This category currently has no reviews.</p>
+                                    `;
+
+                                    if (currentUserData && currentUserData.ban_config.ban_type === 0) {
+                                        reviewDiv.querySelector('.review-text-content').textContent = 'This category currently has no reviews. You could be the first!';
+                                    } else if (currentUserData && currentUserData.ban_config.ban_type >= 1) {
+                                    } else {
+                                        reviewDiv.querySelector('.review-text-content').textContent = 'This category currently has no reviews. Log In with Discord and you could be the first!';
                                     }
+
+                
+                                    reviewsContainer.appendChild(reviewDiv);
                                 }
-
-                                fetchAndRenderReviews();
-
-                            } else {
-                                modalInner.innerHTML = ``;
-                            }
-                        }
-
-                        if (JSON.parse(localStorage.getItem(overridesKey)).find(exp => exp.codename === 'xp_system')?.treatment === 1) {
-                            modal.querySelector('#category-modal-tab-5').classList.remove('hidden');
-                        }
-
-
-                        document.body.appendChild(modal);
-        
-                        setTimeout(() => {
-                            modal.classList.add('show');
-                        }, 1);
-
-
-                        let modal_back = document.createElement("div");
-        
-                        modal_back.classList.add('category-modal-back');
-                        modal_back.id = 'category-modal-back';
-        
-                        document.body.appendChild(modal_back);
-        
-                        setTimeout(() => {
-                            modal_back.classList.add('show');
-                        }, 1);
-
-
-                        if (!categoryModalInfo) {
-                            await fetchCategoryData()
-                        }
-
-                        async function fetchCategoryData() {
-                            const rawCategoryData = await fetch(redneredAPI + endpoints.CATEGORY_MODAL_INFO + categoryData.sku_id);
-
-                            if (!rawCategoryData.ok) {
-                                return
                             }
 
-                            const data = await rawCategoryData.json();
+                            fetchAndRenderReviews();
 
-                            if (data.message) {
-                                console.error(data);
-                            } else {
-                                categoryModalInfo = data;
-                            }
+                        } else {
+                            modalInner.innerHTML = ``;
                         }
+                    }
+
+                    if (JSON.parse(localStorage.getItem(overridesKey)).find(exp => exp.codename === 'xp_system')?.treatment === 1) {
+                        modal.querySelector('#category-modal-tab-5').classList.remove('hidden');
+                    }
+
+
+                    document.body.appendChild(modal);
         
-                        modal.querySelector('#category-modal-tab-1').addEventListener("click", function () {
-                            // Details
-                            changeModalTab('1');
-                        });
-                        modal.querySelector('#category-modal-tab-2').addEventListener("click", function () {
-                            // Raw
-                            changeModalTab('2');
-                        });
-                        modal.querySelector('#category-modal-tab-3').addEventListener("click", function () {
-                            // Assets
-                            changeModalTab('3');
-                        });
-                        // modal.querySelector('#category-modal-tab-5').addEventListener("click", function () {
-                        //     // Rewards
-                        //     changeModalTab('5');
-                        // });
+                    setTimeout(() => {
+                        modal.classList.add('show');
+                    }, 1);
+
+
+                    let modal_back = document.createElement("div");
         
+                    modal_back.classList.add('category-modal-back');
+                    modal_back.id = 'category-modal-back';
+        
+                    document.body.appendChild(modal_back);
+        
+                    setTimeout(() => {
+                        modal_back.classList.add('show');
+                    }, 1);
+
+
+                    if (!categoryModalInfo) {
+                        await fetchCategoryData()
+                    }
+
+                    async function fetchCategoryData() {
+                        const rawCategoryData = await fetch(redneredAPI + endpoints.CATEGORY_MODAL_INFO + categoryData.sku_id);
+
+                        if (!rawCategoryData.ok) {
+                            return
+                        }
+
+                        const data = await rawCategoryData.json();
+
+                        if (data.message) {
+                            console.error(data);
+                        } else {
+                            categoryModalInfo = data;
+                        }
+                    }
+        
+                    modal.querySelector('#category-modal-tab-1').addEventListener("click", function () {
+                        // Details
                         changeModalTab('1');
+                    });
+                    modal.querySelector('#category-modal-tab-2').addEventListener("click", function () {
+                        // Raw
+                        changeModalTab('2');
+                    });
+                    modal.querySelector('#category-modal-tab-3').addEventListener("click", function () {
+                        // Assets
+                        changeModalTab('3');
+                    });
+                    // modal.querySelector('#category-modal-tab-5').addEventListener("click", function () {
+                    //     // Rewards
+                    //     changeModalTab('5');
+                    // });
+        
+                    changeModalTab('1');
 
-                        firstTimeOpeningModal = false;
+                    firstTimeOpeningModal = false;
         
         
-                        modal.addEventListener('click', (event) => {
-                            if (event.target === modal) {
-                                modal.classList.remove('show');
-                                modal_back.classList.remove('show');
-                                setTimeout(() => {
-                                    modal.remove();
-                                    modal_back.remove();
-                                }, 300);
-                                removeParams('itemSkuId');
-                                modalIsAlreadyOpen = false;
-                            }
-                        });
-        
-                        document.querySelector("[data-close-product-card-button]").addEventListener('click', () => {
+                    modal.addEventListener('click', (event) => {
+                        if (event.target === modal) {
                             modal.classList.remove('show');
                             modal_back.classList.remove('show');
                             setTimeout(() => {
                                 modal.remove();
                                 modal_back.remove();
                             }, 300);
-                        });
-                    }
+                            currentOpenModalId = null;
+                            removeParams('itemSkuId');
+                        }
+                    });
         
-                });
+                    document.querySelector("[data-close-product-card-button]").addEventListener('click', () => {
+                        modal.classList.remove('show');
+                        modal_back.classList.remove('show');
+                        setTimeout(() => {
+                            modal.remove();
+                            modal_back.remove();
+                        }, 300);
+                        currentOpenModalId = null;
+                        removeParams('itemSkuId');
+                    });
+                }
     
                 output.appendChild(category);
             });
@@ -2292,18 +3326,45 @@ async function loadSite() {
         };
     
         const scrollToCategoryFromUrl = () => {
-            const params = new URLSearchParams(window.location.search);
-            const targetSkuId = params.get("scrollTo");
-            if (!targetSkuId) return;
-    
-            const targetIndex = filteredData.findIndex(cat => cat.sku_id === targetSkuId);
-            if (targetIndex !== -1) {
-                const targetPage = Math.floor(targetIndex / itemsPerPage) + 1;
-                if (targetPage !== currentPage) {
-                    renderPage(targetPage);
-                } else {
-                    const el = document.querySelector(`[data-sku-id="${targetSkuId}"]`);
-                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            const targetSkuId = currentOpenModalId;
+            const targetListingId = scrollToCache;
+            if (!targetSkuId && !targetListingId) return;
+
+            if (targetListingId) {
+                const targetIndex = filteredData.findIndex(cat =>
+                    cat.store_listing_id === targetListingId ||
+                    (cat.products?.some(p => p.store_listing_id === targetListingId))
+                );
+
+                if (targetIndex !== -1) {
+                    const targetPage = Math.floor(targetIndex / itemsPerPage) + 1;
+                    if (targetPage !== currentPage) {
+                        renderPage(targetPage);
+                    } else {
+                        setTimeout(() => {
+                            const el = document.querySelector(`[data-listing-id="${filteredData[targetIndex].store_listing_id}"]`);
+                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            removeParams('scrollTo');
+                            scrollToCache = '';
+                        }, 500);
+                    }
+                }
+            } else {
+                const targetIndex = filteredData.findIndex(cat =>
+                    cat.sku_id === targetSkuId ||
+                    (cat.products?.some(p => p.sku_id === targetSkuId))
+                );
+
+                if (targetIndex !== -1) {
+                    const targetPage = Math.floor(targetIndex / itemsPerPage) + 1;
+                    if (targetPage !== currentPage) {
+                        renderPage(targetPage);
+                    } else {
+                        setTimeout(() => {
+                            const el = document.querySelector(`[data-sku-id="${filteredData[targetIndex].sku_id}"]`);
+                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }, 500);
+                    }
                 }
             }
         };
@@ -2317,10 +3378,11 @@ async function loadSite() {
     }
 
     async function renderShopBrowseData(data, output) {
+        output.scrollTo(0,0);
         output.innerHTML = ``;
         data.shop_blocks.forEach((categoryData) => {
             const category = document.createElement("div");
-            if (categoryData.type === 0) {
+            if (categoryData.type === category_types.HERO) {
                 category.classList.add('category-container');
                 category.classList.add('category-browse-container');
                 category.setAttribute('data-sku-id', categoryData.sku_id);
@@ -2355,7 +3417,7 @@ async function loadSite() {
                 const bannerButton = document.createElement("div");
                 bannerButton.id = 'home-page-preview-button-container';
                 bannerButton.innerHTML = `
-                    <button class="home-page-preview-button" onclick="loadPage('2'); addParams({scrollTo: '${categoryData.category_sku_id}'});">Shop the ${categoryData.name} Collection</button>
+                    <button class="home-page-preview-button" onclick="scrollToCache = '${categoryData.category_store_listing_id}'; addParams({scrollTo: '${categoryData.category_store_listing_id}'}); loadPage('2');">Shop the ${categoryData.name} Collection</button>
                 `;
                 bannerSummaryAndLogo.appendChild(bannerButton);
 
@@ -2387,10 +3449,60 @@ async function loadSite() {
 
                     category.appendChild(productsWrapper);
                 }
+            } else if (categoryData.type === category_types.FEATURED) {
+
+                category.classList.add('category-container');
+                category.classList.add('category-featured-block-container');
+
+                categoryData.subblocks.forEach(block => {
+                    let featuredBlock = document.createElement("div");
+
+                    featuredBlock.style.backgroundImage = `url(${block.banner_url})`;
+
+                    featuredBlock.innerHTML = `
+                        <button class="take-me-there-home-block-button" onclick="scrollToCache = '${block.category_store_listing_id}'; addParams({scrollTo: '${block.category_store_listing_id}'}); loadPage('2');">Take Me There</button>
+                    `;
+
+                    category.appendChild(featuredBlock);
+                });
             }
 
             output.appendChild(category);
         });
+    }
+
+
+    function renderShopLoadingError(error, output) {
+        output.innerHTML = `
+            <div class="shop-loading-error-container">
+                <svg xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg" width="140" height="131" viewBox="0 0 140 131" fill="none">
+                <g clip-path="url(#clip0_7301_37419)">
+                <path d="M33.585 53.8991C38.405 46.9991 46.485 43.5091 53.085 45.0491C59.685 46.5891 69.975 55.1691 63.625 67.4891L33.585 53.8991Z" fill="black"/>
+                <path d="M92.0151 76.8108C98.0151 75.4008 105.725 77.6908 109.275 84.3208C114.155 93.4308 107.605 104.861 107.605 104.861L84.9551 99.2108L92.0151 76.8108Z" fill="#73767C"/>
+                <path d="M135.955 1.12009C135.775 1.46009 133.425 6.06009 129.835 13.1201L127.085 18.5501L125.505 21.6301C125.055 22.5301 124.585 23.4401 124.105 24.3701L113.535 45.0001L111.895 48.2001C111.102 49.7734 110.302 51.3401 109.495 52.9001L106.715 58.3601L100.265 71.0001L98.455 74.5601L87.205 96.5601L40.665 63.5601L67.605 45.5001L70.745 43.3901L90.615 30.0001L93.615 28.0001L112.685 15.1601L115.595 13.1601C126.645 5.75009 134.545 0.440092 135.085 0.110092C135.222 0.0522836 135.373 0.0393153 135.517 0.0730567C135.662 0.106798 135.792 0.185506 135.888 0.297838C135.985 0.410169 136.044 0.550322 136.056 0.698097C136.068 0.845871 136.032 0.993635 135.955 1.12009Z" fill="#DCDDDE"/>
+                <path d="M127.085 18.5505L124.765 20.4005C125.025 20.8005 125.275 21.2105 125.505 21.6305C125.055 22.5305 124.585 23.4405 124.105 24.3705C123.712 23.5496 123.261 22.7576 122.755 22.0005C117.445 26.1805 111.915 30.4105 106.425 34.5205C109.617 37.3796 112.058 40.9782 113.535 45.0005L111.895 48.2005C110.724 43.4508 108.099 39.1856 104.385 36.0005C97.9054 40.8405 91.5254 45.5105 85.6754 49.7205C90.42 53.1687 94.3211 57.6476 97.0854 62.8205C101.085 59.6905 105.325 56.3305 109.525 52.9205L106.745 58.3805C103.845 60.7005 100.975 62.9705 98.2154 65.1305C99.077 67.0338 99.7729 69.0078 100.295 71.0305L98.4854 74.5905C98.0506 71.8793 97.2814 69.2325 96.1954 66.7105C84.2654 76.0005 74.8154 82.9106 74.6554 83.0005C74.4433 83.1552 74.1879 83.2392 73.9254 83.2405C73.7301 83.2418 73.5373 83.1961 73.3633 83.1074C73.1893 83.0186 73.0391 82.8894 72.9254 82.7306C72.7352 82.4659 72.655 82.1377 72.7016 81.8151C72.7483 81.4926 72.9181 81.2006 73.1754 81.0005C73.3354 80.8805 82.9954 73.7705 95.0654 64.3705C92.3517 59.124 88.397 54.62 83.5454 51.2505C69.3754 61.4405 58.8554 68.6505 58.6454 68.8005C58.4383 68.9401 58.1951 69.0165 57.9454 69.0205C57.6757 69.0241 57.4121 68.9404 57.1939 68.7819C56.9757 68.6233 56.8147 68.3984 56.7348 68.1408C56.6549 67.8832 56.6605 67.6067 56.7507 67.3525C56.841 67.0983 57.011 66.8801 57.2354 66.7305C57.4454 66.5905 67.5354 59.6705 81.2354 49.8105C77.0629 47.3923 72.4097 45.9209 67.6054 45.5005L70.7454 43.3905C75.2565 44.1735 79.5749 45.8167 83.4654 48.2305C89.3354 44.0005 95.7754 39.3005 102.345 34.4005C98.8653 31.9752 94.8321 30.4623 90.6154 30.0005L93.6154 28.0005C97.5252 28.8185 101.21 30.4768 104.415 32.8605C110.065 28.6205 115.775 24.2605 121.245 19.9505C120.175 18.6533 118.885 17.5534 117.435 16.7005C115.983 15.8467 114.362 15.3211 112.685 15.1605L115.595 13.1605C116.674 13.4847 117.711 13.9345 118.685 14.5005C120.41 15.512 121.94 16.8225 123.205 18.3705C125.465 16.5905 127.675 14.8105 129.815 13.0605L127.085 18.5505Z" fill="#B9BBBE"/>
+                <path d="M116.545 95.2996C125.605 85.5696 130.855 77.0896 134.695 65.5696C135.605 62.8296 140.065 64.2796 139.905 66.3596C139.255 75.4196 126.575 90.9196 118.735 97.1196C117.255 98.2796 115.895 95.9996 116.545 95.2996Z" fill="black"/>
+                <path d="M112.738 112.387C118.371 112.275 122.847 107.617 122.734 101.983C122.621 96.3501 117.963 91.8747 112.33 91.9874C106.697 92.1001 102.221 96.7581 102.334 102.391C102.447 108.025 107.105 112.5 112.738 112.387Z" fill="#B9BBBE"/>
+                <path d="M112.555 97.1791C111.055 97.5191 108.675 97.4691 108.615 95.9391C108.555 94.4091 110.165 93.1791 111.695 92.9391C113.225 92.6991 114.775 93.2191 115.035 94.6491C115.295 96.0791 114.085 96.8491 112.555 97.1791Z" fill="#F8F9F9"/>
+                <path d="M120.985 113.78C119.355 102.51 110.405 97.2198 99.9847 99.9798C99.6208 95.8921 98.328 91.9416 96.2047 88.4298C91.2047 80.7298 81.8247 81.6598 77.1447 83.3598C79.1447 74.6998 78.2447 67.6698 72.2847 62.3598C65.5747 56.3798 55.0847 57.9998 50.8147 60.6398C51.2047 51.0198 43.3147 44.5498 35.6047 45.2398C25.6047 46.1398 18.8147 53.7898 18.7647 66.6098C13.4118 71.6689 8.42587 77.1026 3.84468 82.8698C-1.15532 89.2698 -1.04532 98.1698 3.59468 105.18C4.73468 106.92 7.24468 111.18 7.95468 112.3C8.23468 112.73 8.14468 113.21 7.56468 114.03C6.02172 115.939 4.6812 118.004 3.56468 120.19C1.59468 124.3 3.20468 131 9.42468 131C13.4747 131 74.2047 130.87 93.9447 131H123.135C127.375 131 128.785 128.91 128.785 126.15C128.785 122.41 126.865 120.08 122.915 117C122.391 116.622 121.95 116.142 121.618 115.589C121.286 115.035 121.071 114.419 120.985 113.78Z" fill="#73767C"/>
+                <path d="M38.8153 123.551C51.8953 123.931 63.2053 123.851 73.7253 123.551C78.9853 123.431 80.2753 120.991 80.6553 118.041C81.3453 112.791 78.5153 110.661 73.4753 104.801C68.4353 98.9409 54.8953 85.5309 54.8953 85.5309C52.0053 82.5309 48.1053 81.4709 44.4553 84.4109C39.9353 88.0509 35.6453 91.6209 32.7253 96.1009C30.0953 100.101 31.2553 103.521 34.6453 108.431C35.2453 109.291 37.9853 112.431 38.1753 112.991C38.3653 113.551 35.7753 115.131 35.0953 117.561C34.3553 120.221 35.7753 123.461 38.8153 123.551Z" fill="#B9BBBE"/>
+                <path d="M48.7048 102.9C47.5348 101.38 45.5748 99.2203 45.5748 99.2203C45.274 98.8642 44.9058 98.5711 44.4914 98.3577C44.077 98.1442 43.6245 98.0148 43.1599 97.9767C42.6954 97.9386 42.2279 97.9926 41.7842 98.1357C41.3406 98.2787 40.9296 98.508 40.5748 98.8103C39.9668 99.4294 39.5965 100.243 39.5288 101.108C39.4612 101.973 39.7005 102.834 40.2048 103.54C41.1448 104.76 42.2048 106.14 43.4548 107.46C44.1005 108.121 44.9664 108.522 45.8882 108.587C46.8099 108.651 47.7233 108.375 48.4548 107.81C49.109 107.175 49.4984 106.315 49.5448 105.404C49.5911 104.494 49.291 103.599 48.7048 102.9Z" fill="#73767C"/>
+                <path d="M32.3315 82.3655C34.3322 80.4622 34.4112 77.2974 32.5079 75.2967C30.6047 73.2959 27.4398 73.2169 25.4391 75.1202C23.4383 77.0235 23.3593 80.1883 25.2626 82.1891C27.1659 84.1898 30.3307 84.2688 32.3315 82.3655Z" fill="black"/>
+                <path d="M63.1852 115.8C62.2752 114.8 60.4453 114.35 59.4853 113.49C57.6053 111.8 54.7653 108.49 52.4853 110.49C51.0553 111.72 50.9653 113.41 52.1653 115.06C53.1762 116.681 54.5444 118.049 56.1653 119.06C57.9088 119.799 59.8246 120.035 61.6953 119.74C62.1393 119.713 62.5659 119.557 62.9239 119.293C63.282 119.029 63.5561 118.668 63.7135 118.251C63.8708 117.835 63.9047 117.383 63.811 116.948C63.7173 116.513 63.5 116.114 63.1852 115.8Z" fill="#73767C"/>
+                <path d="M99.6054 120.931C99.6611 120.894 99.7145 120.854 99.7654 120.811C100.356 120.235 100.795 119.522 101.044 118.735C101.292 117.949 101.342 117.113 101.188 116.302C101.035 115.491 100.684 114.731 100.166 114.089C99.6473 113.448 98.9783 112.944 98.2181 112.623C97.4579 112.303 96.6303 112.175 95.8089 112.252C94.9875 112.329 94.1979 112.608 93.5105 113.064C92.8232 113.521 92.2593 114.14 91.8694 114.867C91.4794 115.594 91.2753 116.406 91.2754 117.231C92.8776 116.837 94.5654 116.986 96.0733 117.656C97.5813 118.326 98.8237 119.478 99.6054 120.931Z" fill="black"/>
+                <path d="M94.2848 82.7695C93.8848 83.5395 93.4948 84.2995 93.1348 85.0195C95.321 86.74 97.0915 88.9309 98.3148 91.4295C98.4172 91.6365 98.5754 91.8107 98.7715 91.9326C98.9676 92.0546 99.1938 92.1193 99.4248 92.1195C99.6229 92.1169 99.8179 92.069 99.9948 91.9795C100.29 91.8297 100.515 91.5685 100.618 91.2534C100.721 90.9384 100.695 90.5953 100.545 90.2995C99.0997 87.319 96.9513 84.7347 94.2848 82.7695Z" fill="black"/>
+                </g>
+                <defs>
+                <clipPath id="clip0_7301_37419">
+                <rect width="139.83" height="130.95" fill="white" transform="translate(0.0849609)"/>
+                </clipPath>
+                </defs>
+                </svg>
+                <h2>Well, this is awkward.</h2>
+                <p>Hmmm, we weren't able to load the shop. Check back later.</p>
+                <p>Status: ${error}</p>
+            </div>
+        `;
     }
     
     
@@ -2412,32 +3524,41 @@ async function loadSite() {
     window.setDiscordProfileEffectsCache = setDiscordProfileEffectsCache;
 
     async function setDiscordLeakedCategoriesCache() {
-        const rawData = await fetch(redneredAPI + endpoints.DISCORD_LEAKED_CATEGORIES);
+        if (settingsStore.staff_force_leaks_dummy === 1) {
+            discordLeakedCategoriesCache = leaks_dummy_data;
 
-        if (!rawData.ok) {
+            const leaksTab = document.getElementById('shop-tab-1');
+            leaksTab.classList.remove('hidden');
+            leaksTab.setAttribute('data-tooltip', 'Dummy Data');
 
         } else {
-            const data = await rawData.json();
+            const rawData = await fetch(redneredAPI + endpoints.DISCORD_LEAKED_CATEGORIES);
 
-            if (data.categories.length != 0 && data.version) {
-                const leaksTab = document.getElementById('shop-tab-1');
-                leaksTab.classList.remove('hidden');
-                let tooltipValue;
-                if (data.categories.length === 1) {
-                    tooltipValue = 'New '+data.categories[0].name+' Leaks!';
-                } else if (data.categories.length === 2) {
-                    tooltipValue = 'New '+data.categories[0].name+' & '+data.categories[1].name+' Leaks!';
-                } else if (data.categories.length >= 3) {
-                    tooltipValue = data.categories.length+' New Leaked Categories!';
-                }
-                leaksTab.setAttribute('data-tooltip', tooltipValue);
+            if (!rawData.ok) {
 
-                if (localStorage.latest_discord_leaked_categories_version === data.version.toString()) {
-                    leaksTab.classList.add('hide-new-tag');
+            } else {
+                const data = await rawData.json();
+
+                if (data.categories.length != 0 && data.version) {
+                    const leaksTab = document.getElementById('shop-tab-1');
+                    leaksTab.classList.remove('hidden');
+                    let tooltipValue;
+                    if (data.categories.length === 1) {
+                        tooltipValue = 'New '+data.categories[0].name+' Leaks!';
+                    } else if (data.categories.length === 2) {
+                        tooltipValue = 'New '+data.categories[0].name+' & '+data.categories[1].name+' Leaks!';
+                    } else if (data.categories.length >= 3) {
+                        tooltipValue = data.categories.length+' New Leaked Categories!';
+                    }
+                    leaksTab.setAttribute('data-tooltip', tooltipValue);
+
+                    if (localStorage.latest_discord_leaked_categories_version === data.version.toString()) {
+                        leaksTab.classList.add('hide-new-tag');
+                    }
                 }
+
+                discordLeakedCategoriesCache = data;
             }
-
-            discordLeakedCategoriesCache = data;
         }
     }
     window.setDiscordLeakedCategoriesCache = setDiscordLeakedCategoriesCache;
@@ -2483,7 +3604,7 @@ async function loadSite() {
                 const rawData = await fetch(redneredAPI + endpoints.DISCORD_COLLECTIBLES_HOME);
 
                 if (!rawData.ok) {
-
+                    renderShopLoadingError(rawData.status, output);
                 } else {
                     const data = await rawData.json();
 
@@ -2508,7 +3629,7 @@ async function loadSite() {
                 const rawData = await fetch(redneredAPI + endpoints.DISCORD_COLLECTIBLES_CATEGORIES);
 
                 if (!rawData.ok) {
-
+                    renderShopLoadingError(rawData.status, output);
                 } else {
                     const data = await rawData.json();
 
@@ -2525,7 +3646,7 @@ async function loadSite() {
                 const rawData = await fetch(redneredAPI + endpoints.DISCORD_ORBS_CATEGORIES);
 
                 if (!rawData.ok) {
-
+                    renderShopLoadingError(rawData.status, output);
                 } else {
                     const data = await rawData.json();
 
@@ -2539,10 +3660,15 @@ async function loadSite() {
         } else if (currentPageCache === "miscellaneous") {
             const output = document.getElementById('categories-container');
             if (!discordMiscellaneousCategoriesCache) {
-                const rawData = await fetch(redneredAPI + endpoints.DISCORD_MISCELLANEOUS_CATEGORIES);
+                url = redneredAPI + endpoints.DISCORD_MISCELLANEOUS_CATEGORIES;
+                apiUrl = new URL(url);
+                if (JSON.parse(localStorage.getItem(overridesKey)).find(exp => exp.codename === 'published_items_category')?.treatment === 1) {
+                    apiUrl.searchParams.append("include-published-items-category", "true");
+                }
+                const rawData = await fetch(apiUrl);
 
                 if (!rawData.ok) {
-
+                    renderShopLoadingError(rawData.status, output);
                 } else {
                     const data = await rawData.json();
 
@@ -2618,7 +3744,7 @@ async function loadSite() {
             </div>
 
             <div class="side-tabs-button" id="modal-v3-tab-account" onclick="setModalv3InnerContent('account')">
-                <p >Account</p>
+                <p>Account</p>
             </div>
 
             <hr>
@@ -2630,18 +3756,42 @@ async function loadSite() {
                 <p>Appearance</p>
             </div>
 
+            <div id="xp-rewards-tabs-modalv3-container"></div>
 
             <div id="staff-options-modalv3-container"></div>
         
             <hr>
             
             <div class="modalv3-side-tabs-app-info-container">
-                <p>Website made by: </p><a class="link" href="https://github.com/DTACat/">DTACat</a>
+                <div>
+                    <p>Website made by: </p><a class="link" href="https://github.com/DTACat/">DTACat</a>
+                </div>
                 <p>${appType} ${appVersion}</p>
+                <a class="link" href="https://yapper.shop/legal-information/?page=tos">Terms of Service</a>
+                <a class="link" href="https://yapper.shop/legal-information/?page=privacy">Privacy Policy</a>
             </div>
         `;
 
-        if (localStorage.dev === "true") {
+        if (JSON.parse(localStorage.getItem(overridesKey)).find(exp => exp.codename === 'xp_system')?.treatment === 1) {
+            document.getElementById("xp-rewards-tabs-modalv3-container").innerHTML = `
+                <hr>
+                <div class="side-tabs-category-text-container">
+                    <p>XP PERKS</p>
+                </div>
+
+                <div class="side-tabs-button" id="modal-v3-tab-xp_events" onclick="setModalv3InnerContent('xp_events')">
+                    <p>Events</p>
+                </div>
+                <div class="side-tabs-button" id="modal-v3-tab-xp_shop" onclick="setModalv3InnerContent('xp_shop')">
+                    <p>Shop</p>
+                </div>
+                <div class="side-tabs-button" id="modal-v3-tab-xp_inventory" onclick="setModalv3InnerContent('xp_inventory')">
+                    <p>Inventory</p>
+                </div>
+            `;
+        }
+
+        if (settingsStore.dev === 1) {
             document.getElementById("staff-options-modalv3-container").innerHTML = `
                 <hr>
                 <div class="side-tabs-category-text-container">
@@ -2650,12 +3800,6 @@ async function loadSite() {
 
                 <div class="side-tabs-button" id="modal-v3-tab-experiments" onclick="setModalv3InnerContent('experiments')">
                     <p>Experiments</p>
-                </div>
-                <div class="side-tabs-button" id="modal-v3-tab-dismissible_content" onclick="setModalv3InnerContent('dismissible_content')">
-                    <p>Dismissible Content</p>
-                </div>
-                <div class="side-tabs-button" id="modal-v3-tab-local_storage" onclick="setModalv3InnerContent('local_storage')">
-                    <p>Local Storage</p>
                 </div>
             `;
         }
@@ -2705,12 +3849,9 @@ async function loadSite() {
             tabPageOutput.innerHTML = `
                 <h2>Account</h2>
                 <hr>
-                <div class="modalv3-content-card-1">
+                <div class="modalv3-content-card-1" id="discord-account-container">
                     <h2 class="modalv3-content-card-header">Discord Account</h2>
                     <p class="modalv3-content-card-summary">The Discord account linked to Shop Archives.</p>
-
-                    <div id="modalv3-account-account-outdated-container">
-                    </div>
 
                     <div id="modalv3-account-account-details-container">
                         <div class="modalv3-account-account-details">
@@ -2719,7 +3860,7 @@ async function loadSite() {
                             <div class="modalv3-account-banner-filler"></div>
 
                             <div class="modalv3-account-avatar-preview-bg"></div>
-                            <div class="modalv3-account-avatar-preview" style="background-color: var(--background-secondary);"></div>
+                            <img class="modalv3-account-avatar-preview" style="background-color: var(--background-secondary);">
                             <p class="modalv3-account-displayname">Loading...</p>
 
                             <div class="modalv3-account-account-details-inners-padding">
@@ -2737,9 +3878,44 @@ async function loadSite() {
                         </div>
                     </div>
                 </div>
-
-                </div>
             `;
+
+            if (currentUserData) {
+                if (currentUserData.banner) {
+                    tabPageOutput.querySelector(".modalv3-account-banner-image").style.backgroundImage = `url(https://cdn.discordapp.com/banners/${currentUserData.id}/${currentUserData.banner}.png?size=480)`;
+                }
+
+                if (currentUserData.avatar) {
+                    tabPageOutput.querySelector(".modalv3-account-avatar-preview").src = `https://cdn.discordapp.com/avatars/${currentUserData.id}/${currentUserData.avatar}.webp?size=128`;
+                }
+
+                if (currentUserData.banner_color) {
+                    tabPageOutput.querySelector(".modalv3-account-banner-color").style.backgroundColor = currentUserData.banner_color;
+                }
+        
+                if (currentUserData.global_name === null) {
+                    tabPageOutput.querySelector(".modalv3-account-displayname").textContent = currentUserData.username;
+                    tabPageOutput.querySelector(".modalv3-account-displayname-text").textContent = currentUserData.username;
+                } else {
+                    tabPageOutput.querySelector(".modalv3-account-displayname").textContent = currentUserData.global_name;
+                    tabPageOutput.querySelector(".modalv3-account-displayname-text").textContent = currentUserData.global_name;
+                }
+
+                tabPageOutput.querySelector(".modalv3-account-username-text").textContent = currentUserData.username;
+            } else {
+                tabPageOutput.querySelector('#discord-account-container').innerHTML = `
+                    <h2 class="modalv3-content-card-header">You are curently not logged in.</h2>
+                    <p class="modalv3-content-card-summary">Log In with Discord to view your account details.</p>
+
+                    <button class="log-in-with-discord-button" onclick="loginWithDiscord();">
+                        <svg width="59" height="59" viewBox="0 0 59 59" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M48.7541 12.511C45.2046 10.8416 41.4614 9.66246 37.6149 9C37.0857 9.96719 36.6081 10.9609 36.1822 11.9811C32.0905 11.3451 27.9213 11.3451 23.8167 11.9811C23.3908 10.9609 22.9132 9.96719 22.384 9C18.5376 9.67571 14.7815 10.8549 11.2319 12.5243C4.18435 23.2297 2.27404 33.67 3.2292 43.9647C7.35961 47.0915 11.9805 49.4763 16.8854 51C17.9954 49.4763 18.9764 47.8467 19.8154 46.1508C18.2149 45.5413 16.6789 44.7861 15.2074 43.8984C15.5946 43.6069 15.969 43.3155 16.3433 43.024C24.9913 47.1975 35.0076 47.1975 43.6557 43.024C44.03 43.3287 44.4043 43.6334 44.7915 43.8984C43.3201 44.7861 41.7712 45.5413 40.1706 46.164C41.0096 47.8599 41.9906 49.4763 43.1006 51C48.0184 49.4763 52.6393 47.1047 56.7697 43.9647C57.8927 32.0271 54.8594 21.6927 48.7412 12.511H48.7541ZM21.0416 37.6315C18.3827 37.6315 16.1755 35.1539 16.1755 32.1066C16.1755 29.0593 18.2923 26.5552 21.0287 26.5552C23.7651 26.5552 25.9465 29.0593 25.8949 32.1066C25.8432 35.1539 23.7522 37.6315 21.0416 37.6315ZM38.9831 37.6315C36.3113 37.6315 34.1299 35.1539 34.1299 32.1066C34.1299 29.0593 36.2467 26.5552 38.9831 26.5552C41.7195 26.5552 43.888 29.0593 43.8364 32.1066C43.7847 35.1539 41.6937 37.6315 38.9831 37.6315Z" fill="white"/>
+                        </svg>
+                        Log In with Discord
+                    </button>
+                `;
+            }
+
         } else if (tab === "profile") {
             tabPageOutput.innerHTML = `
                 <h2>${getTextString("MODAL_V3_TAB_PROFILE_HEADER")}</h2>
@@ -2985,6 +4161,33 @@ async function loadSite() {
                     <div class="modalv3-theme-selection-container" id="modalv3-theme-selection-container">
                     </div>
                 </div>
+
+                <hr>
+
+                <div class="modalv3-content-card-1">
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Day-Month-Year Date Format</div>
+                            <div class="setting-description">Changes date formats to DD/MM/YYYY instead of MM/DD/YY</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="non_us_timezone_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Profile Effects Cut Fix</div>
+                            <div class="setting-description">Fixes some profile effects being cut off at the bottom</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="profile_effect_tweaks_fix_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             `;
 
             defaultThemes.forEach((theme) => {
@@ -3013,93 +4216,101 @@ async function loadSite() {
                 document.getElementById("modalv3-theme-selection-container").appendChild(themeCard);
             });
 
-            // if (localStorage.experiment_2025_04_theme_picker_v2_color === "Treatment 1: Enabled") {
-            //     document.getElementById("modal-v3-color-themes-experiment-output").innerHTML = `
-            //         <hr>
-            //         <div class="modalv3-content-card-1">
-            //             <h2 class="modalv3-content-card-header">${getTextString("MODAL_V3_TAB_APPEARANCE_THEME_COLOR_HEADER")}</h2>
-            //             <p class="modalv3-content-card-summary">${getTextString("MODAL_V3_TAB_APPEARANCE_THEME_COLOR_SUMMARY")}</p>
-
-            //             <div class="modalv3-theme-selection-container" id="modalv3-color-theme-selection-container">
-            //             </div>
-            //         </div>
-            //     `;
-
-            //     document.getElementById("modalv3-color-theme-selection-container").innerHTML = `
-            //         <div class="theme-selection-box" title="${getTextString("THEME_PICKER_V2_BLUE")}" id="theme-color_blue-button" onclick="updateThemeStore('color_blue', 'true', null);"></div>
-            //         <div class="theme-selection-box" title="${getTextString("THEME_PICKER_V2_RED")}" id="theme-color_red-button" onclick="updateThemeStore('color_red', 'true', null);"></div>
-            //         <div class="theme-selection-box" title="${getTextString("THEME_PICKER_V2_GREEN")}" id="theme-color_green-button" onclick="updateThemeStore('color_green', 'true', null);"></div>
-            //     `;
-            // }
-
-            // if (localStorage.experiment_2025_04_theme_picker_v2_community === "Treatment 2: As banners") {
-            //     document.getElementById("modal-v3-community-themes-experiment-output").innerHTML = `
-            //         <hr>
-            //         <div class="modalv3-content-card-1">
-            //             <h2 class="modalv3-content-card-header">${getTextString("MODAL_V3_TAB_APPEARANCE_THEME_COMMUNITY_HEADER")}</h2>
-            //             <p class="modalv3-content-card-summary">${getTextString("MODAL_V3_TAB_APPEARANCE_THEME_COMMUNITY_SUMMARY")}</p>
-
-            //             <div id="modalv3-community-theme-selection-container">
-            //             </div>
-            //         </div>
-            //     `;
-            //     fetchAndRenderCommunityThemesAsBanners();
-            // }
-
-            async function fetchAndRenderCommunityThemesAsBanners() {
-                if (!communityThemesCache) {
-                    await setCommunityThemesCache();
-                }
-
-                try {
-                    communityThemesCache.forEach(theme => {
-                        let themeIcon = document.createElement("div");
-
-                        themeIcon.classList.add("modalv3-community-theme-banner");
-                        themeIcon.id = 'theme-community-' + theme.id + '-button'
-                        themeIcon.style.color = theme.text_color;
-                        if (theme.banner.src != null) {
-                            themeIcon.style.backgroundImage = `linear-gradient(-90deg,rgba(0, 0, 0, 0) 30%,${theme.banner.color_primary}), url('${theme.banner.src}')`;
-                        } else if (theme.banner.color_secondary != null) {
-                            themeIcon.style.backgroundImage = `linear-gradient(-90deg, ${theme.banner.color_secondary} 30%,${theme.banner.color_primary})`;
-                        } else {
-                            themeIcon.style.backgroundColor = theme.banner.color_primary;
-                        }
-
-                        themeIcon.innerHTML = `
-                            <p class="modalv3-community-theme-banner-header">${theme.name}</p>
-                            <button class="modalv3-apply-theme-button" onclick="updateThemeStore('community-${theme.id}', 'true', '${theme.github.raw}');">Apply</button>
-                            <div class="modalv3-community-theme-banner-creddits-container">
-                                <div title="Github">
-                                    <svg class="shareIcon_modal" onclick="window.open('https://github.com/${theme.github.user}/${theme.github.repo}');" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20.0001 2.4375C20.0001 1.725 19.9521 0.8505 19.6251 0C19.6251 0 17.4861 0.0149998 15.4686 1.926C14.5371 1.6545 13.5411 1.5 12.5001 1.5C11.4591 1.5 10.4631 1.6545 9.53157 1.926C7.51407 0.0149998 5.37507 0 5.37507 0C5.04957 0.8505 5.00007 1.725 5.00007 2.4375C5.00007 3.516 5.19207 4.1775 5.30757 4.5045C4.17807 5.7585 3.50007 7.311 3.50007 9C3.50007 12.279 5.98257 14.2965 9.50007 15C8.70957 15.6945 8.22507 16.665 8.07057 17.754C7.73607 17.916 7.25007 18 6.68757 18C6.23607 18 5.35857 17.787 4.54107 16.5135C4.21107 15.9975 3.50007 15 2.56257 15C2.37957 15 1.99407 14.988 2.00007 15.2715C2.00307 15.4065 2.21007 15.408 2.65257 15.8025C3.02307 16.134 3.36807 16.677 3.50007 17.25C3.71757 18.1905 4.58907 20.0625 6.68757 20.0625C7.43757 20.0625 8.00007 19.875 8.00007 19.875V23.3115C9.42057 23.757 10.9326 24 12.5001 24C14.0676 24 15.5796 23.757 17.0001 23.3115V18.375C17.0001 17.0265 16.4391 15.825 15.5001 15C19.0176 14.2965 21.5001 12.279 21.5001 9C21.5001 7.341 20.8461 5.8125 19.7511 4.5705C19.8456 4.278 20.0001 3.6 20.0001 2.4375Z" fill="currentColor"/></svg>
-                                </div>
-                            </div>
-                        `;
-
-                        document.getElementById("modalv3-community-theme-selection-container").appendChild(themeIcon);
-                    });
-                    if (document.getElementById("theme-" + localStorage.sa_theme + "-button")) {
-                        document.getElementById("theme-" + localStorage.sa_theme + "-button").classList.add('theme-selection-box-selected');
-                    }
-                }
-                catch(error) {
-                    document.getElementById("modalv3-community-theme-selection-container").innerHTML = `There was an error loading community themes`;
-                }
-            }
-
             if (document.getElementById("theme-" + localStorage.sa_theme + "-button")) {
                 document.getElementById("theme-" + localStorage.sa_theme + "-button").classList.add('theme-selection-box-selected');
             }
 
+            
+            updateToggleStates();
+
+            tabPageOutput.querySelector('#non_us_timezone_toggle').addEventListener("click", () => {
+                toggleSetting('non_us_timezone');
+                updateToggleStates();
+            });
+
+            tabPageOutput.querySelector('#profile_effect_tweaks_fix_toggle').addEventListener("click", () => {
+                toggleSetting('profile_effect_tweaks_fix');
+                updateToggleStates();
+                if (!document.body.classList.contains('profile-effect-bug-fix-thumbnails')) {
+                    document.body.classList.add('profile-effect-bug-fix-thumbnails');
+                } else {
+                    document.body.classList.remove('profile-effect-bug-fix-thumbnails');
+                }
+            });
+
+            // Function to toggle a setting (0 or 1)
+            function toggleSetting(key) {
+                if (key in settingsStore) {
+                    const newValue = settingsStore[key] === 0 ? 1 : 0;
+                    changeSetting(key, newValue);
+                }
+            }
+
+            // Update toggle visual states
+            function updateToggleStates() {
+                for (let key in settingsStore) {
+                    const toggle = document.getElementById(key + '_toggle');
+                    if (toggle) {
+                        if (settingsStore[key] === 1) {
+                            toggle.classList.add('active');
+                        } else {
+                            toggle.classList.remove('active');
+                        }
+                    }
+                }
+            }
+
         } else if (tab === "accessibility") {
             tabPageOutput.innerHTML = `
-                <h2>${getTextString("MODAL_V3_TAB_ACCESSIBILITY_HEADER")}</h2>
-                <div class="modalv3-content-card-1">
-                    <h2 class="modalv3-content-card-header">${getTextString("MODAL_V3_TAB_ACCESSIBILITY_REDUCED_MOTION_HEADER")}</h2>
-                    <p class="modalv3-content-card-summary">${getTextString("MODAL_V3_TAB_ACCESSIBILITY_REDUCED_MOTION_SUMMARY")}</p>
-                    <p class="modalv3-content-card-summary">${getTextString("MODAL_V3_TAB_ACCESSIBILITY_REDUCED_MOTION_SUMMARY2")}</p>
+                <h2>Accessibility</h2>
 
-                    <input class="modalv3-toggle" onclick="reducedMotionChecked();" id="reduced-motion-box" type="checkbox">
+                <hr>
+
+                <div class="modalv3-content-card-1">
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Developer Mode</div>
+                            <div class="setting-description">something dev idk</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="developer_mode_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+        } else if (tab === "xp_events") {
+            tabPageOutput.innerHTML = `
+                <h2>Events</h2>
+
+                <hr>
+
+                <div class="modalv3-content-card-1">
+                    <h2 class="modalv3-content-card-header">Coming in update 7.1</h2>
+                </div>
+            `;
+
+        } else if (tab === "xp_shop") {
+            tabPageOutput.innerHTML = `
+                <h2>XP Shop</h2>
+
+                <hr>
+
+                <div class="modalv3-content-card-1">
+                    <h2 class="modalv3-content-card-header">Coming in update 7.1</h2>
+                </div>
+            `;
+
+        } else if (tab === "xp_inventory") {
+            tabPageOutput.innerHTML = `
+                <h2>Inventory</h2>
+
+                <hr>
+
+                <div class="modalv3-content-card-1">
+                    <h2 class="modalv3-content-card-header">Coming in update 7.1</h2>
                 </div>
             `;
 
@@ -3237,43 +4448,6 @@ async function loadSite() {
           
             renderExperiments();
 
-        } else if (tab === "dismissible_content") {
-            tabPageOutput.innerHTML = `
-                <h2>${getTextString("MODAL_V3_TAB_DISMISSIBLE_CONTENT_HEADER")}</h2>
-
-                <div class="modalv3-content-card-1" id="modalv3-dismissible-content-output">
-                </div>
-            `;
-        } else if (tab === "local_storage") {
-            tabPageOutput.innerHTML = `
-                <h2>${getTextString("MODAL_V3_TAB_LOCAL_STORAGE_HEADER")}</h2>
-                <div class="modalv3-content-card-1">
-                    <h2 class="modalv3-content-card-header">${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_HEADER")}</h2>
-                    <p class="modalv3-content-card-summary">${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_SUMMARY")}</p>
-
-                    <div class="modalv3-localstorage-item-card">
-                        <input type="text" class="modalv3-api-testfetch-text-input" id="modalv3-localstorage-add-input-key" placeholder="${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_KEY_PLACEHOLDER")}">
-                        <input type="text" class="modalv3-api-testfetch-text-input" id="modalv3-localstorage-add-input-value" placeholder="${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_VALUE_PLACEHOLDER")}">
-                        <button onclick="modalv3AddLocalStorage()">${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_ADD")}</button>
-                    </div>
-                    <div id="modalv3-localstorage-output"></div>
-                </div>
-                <hr>
-                <div class="modalv3-content-card-1">
-                    <h2 class="modalv3-content-card-header">${getTextString("MODAL_V3_TAB_STORAGE_SESSION_STORAGE_HEADER")}</h2>
-                    <p class="modalv3-content-card-summary">${getTextString("MODAL_V3_TAB_STORAGE_SESSION_STORAGE_SUMMARY")}</p>
-
-                    <div class="modalv3-localstorage-item-card">
-                        <input type="text" class="modalv3-api-testfetch-text-input" id="modalv3-sessionstorage-add-input-key" placeholder="${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_KEY_PLACEHOLDER")}">
-                        <input type="text" class="modalv3-api-testfetch-text-input" id="modalv3-sessionstorage-add-input-value" placeholder="${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_VALUE_PLACEHOLDER")}">
-                        <button onclick="modalv3AddSessionStorage()">${getTextString("MODAL_V3_TAB_STORAGE_LOCAL_STORAGE_ADD")}</button>
-                    </div>
-                    <div id="modalv3-sessionstorage-output"></div>
-                </div>
-            `;
-
-            modalv3RefreshLocalStorageList()
-            modalv3RefreshSessionStorageList()
         } else {
             console.error(tab + ' is not a valid tab');
         }
@@ -3281,7 +4455,134 @@ async function loadSite() {
 
     window.setModalv3InnerContent = setModalv3InnerContent;
 
+    function toggleStaffDevTools() {
 
+        const devtoolsContainer = document.querySelector('.staff-devtools-container');
+
+        if (!devtoolsOpenCache) {
+
+            devtoolsOpenCache = true;
+
+            devtoolsContainer.innerHTML = `
+                <div class="staff-devtools">
+                    <h2>Devtools</h2>
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Shop: Force Leaks</div>
+                            <div class="setting-description">Overrides the leaks endpoint with client side dummy data (requires restart)</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="staff_force_leaks_dummy_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Shop: Force Show Reviews</div>
+                            <div class="setting-description">Allows you to view the reviews for a category even if its reviews are disabled.</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="staff_force_viewable_reviews_tab_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Simulate: Lite Ban</div>
+                            <div class="setting-description">Simulate the user having ban_type 1.</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="staff_simulate_ban_type_1_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Simulate: Medium Ban</div>
+                            <div class="setting-description">Simulate the user having ban_type 2.</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="staff_simulate_ban_type_2_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="setting">
+                        <div class="setting-info">
+                            <div class="setting-title">Simulate: Guidelines Block</div>
+                            <div class="setting-description">Simulate the user having a username that doesn't follow the guidelines.</div>
+                        </div>
+                        <div class="toggle-container">
+                            <div class="toggle" id="staff_simulate_guidelines_block_toggle">
+                                <div class="toggle-circle"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            updateToggleStates();
+
+            devtoolsContainer.querySelector('#staff_force_leaks_dummy_toggle').addEventListener("click", () => {
+                toggleSetting('staff_force_leaks_dummy');
+                updateToggleStates();
+            });
+
+            devtoolsContainer.querySelector('#staff_force_viewable_reviews_tab_toggle').addEventListener("click", () => {
+                toggleSetting('staff_force_viewable_reviews_tab');
+                updateToggleStates();
+            });
+
+            devtoolsContainer.querySelector('#staff_simulate_ban_type_1_toggle').addEventListener("click", () => {
+                toggleSetting('staff_simulate_ban_type_1');
+                updateToggleStates();
+            });
+
+            devtoolsContainer.querySelector('#staff_simulate_ban_type_2_toggle').addEventListener("click", () => {
+                toggleSetting('staff_simulate_ban_type_2');
+                updateToggleStates();
+            });
+
+            devtoolsContainer.querySelector('#staff_simulate_guidelines_block_toggle').addEventListener("click", () => {
+                toggleSetting('staff_simulate_guidelines_block');
+                updateToggleStates();
+            });
+
+            // Function to toggle a setting (0 or 1)
+            function toggleSetting(key) {
+                if (key in settingsStore) {
+                    const newValue = settingsStore[key] === 0 ? 1 : 0;
+                    changeSetting(key, newValue);
+                }
+            }
+
+            // Update toggle visual states
+            function updateToggleStates() {
+                for (let key in settingsStore) {
+                    const toggle = document.getElementById(key + '_toggle');
+                    if (toggle) {
+                        if (settingsStore[key] === 1) {
+                            toggle.classList.add('active');
+                        } else {
+                            toggle.classList.remove('active');
+                        }
+                    }
+                }
+            }
+        } else {
+            devtoolsOpenCache = false;
+            devtoolsContainer.innerHTML = ``;
+        }
+    }
+
+    window.toggleStaffDevTools = toggleStaffDevTools;
+
+    if (settingsStore.dev === 1) {
+        document.getElementById('dev-tools-icon').classList.remove('hidden');
+    }
 
 }
 window.loadSite = loadSite;
@@ -3290,9 +4591,36 @@ function triggerSafetyBlock() {
     console.warn('%cWarning!', 'color: lightblue; font-weight: bold; font-size: 30px; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;');
     console.warn('You\'re not visiting Shop Archives on a verified domain, the website "' + window.location.hostname + '" could be trying to hack you, please close the tab immediately!');
 
+    // try {
+    //     document.getElementById("title-brick").textContent = "Warning!";
+    //     document.getElementById("summary-brick").textContent = 'You\'re not visiting Shop Archives on a verified domain, the website "' + window.location.hostname + '" could be trying to hack you, please close the tab immediately!';
+    // } catch {
+        
+    // }
+
     try {
-        document.getElementById("title-brick").textContent = "Warning!";
-        document.getElementById("summary-brick").textContent = 'You\'re not visiting Shop Archives on a verified domain, the website "' + window.location.hostname + '" could be trying to hack you, please close the tab immediately!';
+        document.getElementById("title-brick").textContent = "Error!";
+        document.getElementById("summary-brick").textContent = 'Unable to verify origin';
+    } catch {
+        
+    }
+}
+
+function triggerSessionExpiredBlock() {
+    try {
+        document.getElementById("title-brick").textContent = "Session Expired!";
+        document.getElementById("summary-brick").textContent = 'Please log in again or continue as guest';
+        document.querySelector('.brick-wall-buttons-container').innerHTML = `
+            <button class="log-in-with-discord-button" onclick="loginWithDiscord();">
+                <svg width="59" height="59" viewBox="0 0 59 59" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M48.7541 12.511C45.2046 10.8416 41.4614 9.66246 37.6149 9C37.0857 9.96719 36.6081 10.9609 36.1822 11.9811C32.0905 11.3451 27.9213 11.3451 23.8167 11.9811C23.3908 10.9609 22.9132 9.96719 22.384 9C18.5376 9.67571 14.7815 10.8549 11.2319 12.5243C4.18435 23.2297 2.27404 33.67 3.2292 43.9647C7.35961 47.0915 11.9805 49.4763 16.8854 51C17.9954 49.4763 18.9764 47.8467 19.8154 46.1508C18.2149 45.5413 16.6789 44.7861 15.2074 43.8984C15.5946 43.6069 15.969 43.3155 16.3433 43.024C24.9913 47.1975 35.0076 47.1975 43.6557 43.024C44.03 43.3287 44.4043 43.6334 44.7915 43.8984C43.3201 44.7861 41.7712 45.5413 40.1706 46.164C41.0096 47.8599 41.9906 49.4763 43.1006 51C48.0184 49.4763 52.6393 47.1047 56.7697 43.9647C57.8927 32.0271 54.8594 21.6927 48.7412 12.511H48.7541ZM21.0416 37.6315C18.3827 37.6315 16.1755 35.1539 16.1755 32.1066C16.1755 29.0593 18.2923 26.5552 21.0287 26.5552C23.7651 26.5552 25.9465 29.0593 25.8949 32.1066C25.8432 35.1539 23.7522 37.6315 21.0416 37.6315ZM38.9831 37.6315C36.3113 37.6315 34.1299 35.1539 34.1299 32.1066C34.1299 29.0593 36.2467 26.5552 38.9831 26.5552C41.7195 26.5552 43.888 29.0593 43.8364 32.1066C43.7847 35.1539 41.6937 37.6315 38.9831 37.6315Z" fill="white"/>
+                </svg>
+                Log In with Discord
+            </button>
+            <button class="log-in-with-discord-button" style="background-color: var(--color-primary);" onclick="logoutOfDiscord();">
+                Continue as Guest
+            </button>
+        `;
     } catch {
         
     }
@@ -3319,7 +4647,6 @@ function createNotice(text, type) {
 }
 
 function updateThemeStore(theme, hasButtons) {
-    localStorage.sa_theme = theme;
     if (hasButtons === "true") {
         try {
             if (document.querySelector(".theme-selection-box-selected")) {
@@ -3327,7 +4654,7 @@ function updateThemeStore(theme, hasButtons) {
                     el.classList.remove("theme-selection-box-selected");
                 });
             }
-            document.body.removeAttribute("class");
+            document.body.classList.remove('theme-' + localStorage.sa_theme);
         } catch (error) {
         }
         if (document.getElementById("theme-" + theme + "-button")) {
@@ -3335,6 +4662,7 @@ function updateThemeStore(theme, hasButtons) {
         }
     }
     document.body.classList.add('theme-' + theme);
+    localStorage.sa_theme = theme;
 }
 
 function copyValue(value) {
@@ -3345,7 +4673,7 @@ function redirectToLink(link) {
     window.location.href = link;
 }
 
-function loginToDiscord() {
+function loginWithDiscord() {
     let redirect;
     if (appType === "Stable") {
         redirect = redneredAPI + endpoints.STABLE_LOGIN_CALLBACK
@@ -3358,10 +4686,68 @@ function loginToDiscord() {
     window.location.href = discordUrl;
 }
 
+function logoutOfDiscord() {
+    localStorage.removeItem('token');
+    location.reload();
+}
+
+function dev() {
+    if (settingsStore.dev === 0) {
+        changeSetting('dev', 1);
+    } else {
+        changeSetting('dev', 0);
+    }
+    location.reload();
+}
+
+
+async function postReview(categoryId, rating, text) {
+
+    const response = await fetch(redneredAPI + endpoints.CATEGORY_MODAL_INFO + categoryId + endpoints.CATEGORY_MODAL_REVIEW, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            "Authorization": localStorage.token
+        },
+        body: JSON.stringify({
+            rating,
+            text
+        })
+    });
+
+    const result = await response.json();
+
+    return result;
+
+};
+
+async function deleteReviewById(reviewId) {
+
+    const response = await fetch(redneredAPI + endpoints.CATEGORY_MODAL_REVIEW_DELETE + reviewId, {
+        method: 'DELETE',
+        headers: {
+            'Content-Type': 'application/json',
+            "Authorization": localStorage.token
+        }
+    });
+
+    const result = await response.json();
+
+    return result;
+
+};
 
 
 
 
+
+
+
+
+
+
+
+// Smooth Animate Text Code
 
 function animateNumber(element, targetValue, duration = 1000, options = {}) {
     // Handle both element ID strings and actual DOM elements
@@ -3472,6 +4858,11 @@ function animateXPNumber(elementId, targetValue, duration = 1000) {
 
 
 
+
+
+
+
+// Tooltip Code
 
 let tooltip = null;
 let hideTimeout = null;
@@ -3597,6 +4988,9 @@ window.addEventListener('scroll', cleanupTooltip);
 
 
 
+
+
+// Profile Effect Code
 
 class ProfileEffectsPlayer {
     constructor() {

@@ -20,7 +20,9 @@ const endpoints = {
     DISCORD_ORBS_CATEGORIES: "/discord-orbs-categories",
     DISCORD_POTIONS: "/discord-consumables",
     DISCORD_MISCELLANEOUS_CATEGORIES: "/discord-miscellaneous-categories",
-    CATEGORY_MODAL_INFO: "/category/"
+    CATEGORY_MODAL_INFO: "/category/",
+    CATEGORY_MODAL_REVIEW: "/review",
+    CATEGORY_MODAL_REVIEW_DELETE: "/reviews/"
 };
 
 const redneredAPI = endpoints.MAIN + endpoints.VERSION;
@@ -33,6 +35,13 @@ const item_types = {
     BUNDLE: 1e3,
     VARIANTS_GROUP: 2e3,
     EXTERNAL_SKU: 3e3
+};
+
+const category_types = {
+    HERO: 0,
+    FEATURED: 1,
+    FEED: 2,
+    WIDE_BANNER: 3
 };
 
 const discord_categories = {
@@ -208,6 +217,10 @@ const category_client_overrides = [
         showDarkBannerText: !0
     },
     {
+        sku_id: discord_categories.DOJO,
+        showDarkBannerText: !0
+    },
+    {
         sku_id: discord_categories.BAND,
         animatedBanner: "https://cdn.discordapp.com/assets/content/7e328a07e057745faad2366c9ebdf03e2bd69d22dfe8d41c81a10d29a8de7cf7.png"
     },
@@ -279,6 +292,22 @@ const nameplate_palettes = {
 };
 
 const experiments = [
+    {
+        title: `Published Items Category`,
+        codename: `published_items_category`,
+        release_config: {
+            year: `2025`,
+            month: `06`
+        },
+        treatments: [
+            {
+                title: `Not Eligible`
+            },
+            {
+                title: `Show Published Items Category In Misc Tab`
+            }
+        ]
+    },
     {
         title: `Advanced Theme Picker`,
         codename: `advanced_theme_picker`,
@@ -352,4 +381,41 @@ const reviews_system_types = [
         id: 4,
         codename: "positive"
     }
-]
+];
+
+const settings = {
+    "non_us_timezone": 0,
+    "profile_effect_tweaks_fix": 0,
+    "dev": 0,
+    "staff_force_leaks_dummy": 0,
+    "staff_force_viewable_reviews_tab": 0,
+    "staff_simulate_ban_type_1": 0,
+    "staff_simulate_ban_type_2": 0,
+    "staff_simulate_guidelines_block": 0
+};
+
+const leaks_dummy_data = {
+    version: 0,
+    categories: [
+        {
+            "sku_id": "0",
+            "name": "Leaks Dummy Category",
+            "summary": null,
+            "store_listing_id": null,
+            "banner": null,
+            "unpublished_at": null,
+            "styles": null,
+            "logo": null,
+            "hero_ranking": null,
+            "mobile_bg": null,
+            "pdp_bg": null,
+            "success_modal_bg": null,
+            "mobile_banner": null,
+            "featured_block": null,
+            "hero_banner": null,
+            "wide_banner": null,
+            "hero_logo": null,
+            "products": []
+        }
+    ]
+};
